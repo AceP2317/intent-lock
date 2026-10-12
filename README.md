@@ -77,7 +77,20 @@ warning, so a check that could not run never looks like one that passed.
 - The question guard counts sentences and matches words. It cannot tell whether an option actually
   teaches the choice; that half is the method's job, not the hook's.
 
-## Why
+## Why it pays for itself
+
+Anthropic's page states the constraint plainly: "Claude's context window fills up fast, and
+performance degrades as it fills." A build aimed at an assumed intent gets corrected after the work
+exists, in the same window. Every round of rework then re-reads the build, the failed attempt and the
+correction, and the original instruction becomes a smaller share of a bigger context. That is drift.
+The interview moves the corrections to planning size, before anything is built, and the handoff
+starts the build without the planning conversation riding along on every request.
+
+Measured on the session that planned the write-up below, with both windows counted: 113.0 million
+tokens read with the handoff, against 165.5 million for the same build kept in the planning window.
+The build met all six of its checks in one 39-minute unattended pass.
+
+## Read more
 
 The write-up, with a real planning session as the worked example:
 [ian-provencher.com/blog/intent-lock](https://ian-provencher.com/blog/intent-lock).
