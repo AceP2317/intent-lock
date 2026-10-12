@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "bash ~/.claude/intent-lock/hooks/intent-inject.sh" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "ExitPlanMode", "hooks": [{ "type": "command", "command": "bash ~/.claude/intent-lock/hooks/intent-guard.sh" }] },
+      { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "bash ~/.claude/intent-lock/hooks/question-guard.sh" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "ExitPlanMode", "hooks": [{ "type": "command", "command": "bash ~/.claude/intent-lock/hooks/plan-handoff.sh" }] }
+    ]
+  }
+}
