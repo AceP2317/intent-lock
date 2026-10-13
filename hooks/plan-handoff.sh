@@ -112,6 +112,10 @@ if [ "$win" = 0 ]; then
 fi
 
 psq() { printf "'%s'" "${1//\'/\'\'}"; }
+# Start-Process joins -ArgumentList with plain spaces and adds no quotes, so a path holding a space
+# arrives in two pieces (2026-10-13: a folder named "New Bern" reached Windows Terminal as a program
+# called "Bern"). psqq hands PowerShell a literal whose value carries its own double quotes.
+psqq() { psq "\"$1\""; }
 wcwd=$(cygpath -w "$cwd" 2>/dev/null || printf '%s' "$cwd")
 tmp=$(cygpath -w "${TEMP:-/tmp}" 2>/dev/null || printf '%s' "${TEMP:-/tmp}")
 launcher="$tmp\\intent-lock-handoff-$sid.ps1"
@@ -119,17 +123,32 @@ body="Set-Location -LiteralPath $(psq "$wcwd")
 Remove-Item -LiteralPath $(psq "$launcher") -Force -ErrorAction SilentlyContinue
 claude --permission-mode auto $(psq "$prompt")"
 
+shell=pwsh.exe; command -v pwsh.exe >/dev/null 2>&1 || shell=powershell.exe
+# No -d for Windows Terminal: the launcher's first line moves into the folder itself, so the folder
+# never has to survive wt.exe's own parsing, where a semicolon also separates commands.
+fallback="Start-Process $shell -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$(psqq "$launcher") -WorkingDirectory $(psq "$wcwd")"
+
 if [ "${INTENT_LOCK_HANDOFF_DRYRUN:-}" = 1 ]; then
   printf 'DRYRUN windows launcher %s:\n%s\n' "$launcher" "$body" >&2
+  printf 'DRYRUN windows terminal: wt.exe %s -NoExit -ExecutionPolicy Bypass -File %s\n' "$shell" "$launcher" >&2
+  printf 'DRYRUN windows fallback: powershell.exe -NoProfile -Command %s\n' "$fallback" >&2
   say "DRYRUN: the handoff would open a fresh auto-mode session in $wcwd ($goal_note)."
 fi
 
-printf '%s\n' "$body" > "$(cygpath -u "$launcher" 2>/dev/null || printf '%s' "$launcher")" 2>/dev/null \
+launcher_u=$(cygpath -u "$launcher" 2>/dev/null || printf '%s' "$launcher")
+printf '%s\n' "$body" > "$launcher_u" 2>/dev/null \
   || say "The walk-away handoff was armed, but its launcher could not be written to $launcher, so no fresh session was opened. Tell the user in one line and carry on in this window."
-shell=pwsh.exe; command -v pwsh.exe >/dev/null 2>&1 || shell=powershell.exe
 if command -v wt.exe >/dev/null 2>&1; then
-  wt.exe -d "$wcwd" "$shell" -NoExit -ExecutionPolicy Bypass -File "$launcher" >/dev/null 2>&1 &
+  wt.exe "$shell" -NoExit -ExecutionPolicy Bypass -File "$launcher" >/dev/null 2>&1 &
 else
-  powershell.exe -NoProfile -Command "Start-Process $shell -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$(psq "$launcher") -WorkingDirectory $(psq "$wcwd")" >/dev/null 2>&1 &
+  powershell.exe -NoProfile -Command "$fallback" >/dev/null 2>&1 &
 fi
-say "THE PLAN HANDOFF HAS FIRED: a fresh auto-mode session is opening in a new window to build this plan ($goal_note). Do not start work on this plan here, because two sessions building one plan collide. Tell the user the new window has it and this one can be closed, then stop."
+# Starting the terminal proves nothing: a launch that fails is reported inside the new window, where
+# this hook cannot see it. The launcher deletes itself on its second line, so its disappearance is
+# the proof that the new window ran it.
+waited=0
+while [ -f "$launcher_u" ] && [ "$waited" -lt 25 ]; do sleep 1; waited=$((waited + 1)); done
+if [ -f "$launcher_u" ]; then
+  say "THE PLAN HANDOFF DID NOT START: a new window was asked for, but within 25 seconds nothing ran its launcher, so no fresh session is building this plan. Tell the user in one line, and give them this command to open it by hand: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so."
+fi
+say "THE PLAN HANDOFF HAS FIRED: a fresh auto-mode session has started in a new window to build this plan ($goal_note). Do not start work on this plan here, because two sessions building one plan collide. Tell the user the new window has it and this one can be closed, then stop."

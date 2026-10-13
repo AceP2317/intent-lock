@@ -144,6 +144,21 @@ PLATFORM=unix run plan-handoff.sh "$(approve)"
 printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WALK -->\n' > "$T/plan.md"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $OUT == *"goal NOT set"* && $ERR != *"/goal Carry"* ]] && ok "a plan with no DONE slot opens without a goal, and says so" || bad "a plan with no DONE slot opens without a goal, and says so" "$OUT / $ERR"
+# A path holding a space: Start-Process joins its argument list with plain spaces, so an unquoted path
+# arrives in two pieces. The temp folder carries the space here, as it does for a Windows user whose
+# name has one. The control runs the same check against a copy with the quoting taken out.
+fresh; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
+mkdir -p "$T/state/handoff" "$T/te mp" "$T/old/hooks"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+TEMP="$T/te mp" PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR == *"DRYRUN windows fallback:"*"'-File','\""*"te mp"*".ps1\"'"* ]] \
+  && ok "a launcher path holding a space reaches Start-Process inside its own double quotes" || bad "a launcher path holding a space reaches Start-Process inside its own double quotes" "$ERR"
+[[ $ERR == *"DRYRUN windows terminal: wt.exe "* && $ERR != *"wt.exe -d"* ]] \
+  && ok "Windows Terminal is not handed the folder, so no folder name can split its command line" || bad "Windows Terminal is not handed the folder, so no folder name can split its command line" "$ERR"
+sed 's/\$(psqq "\$launcher")/$(psq "$launcher")/' "$H/plan-handoff.sh" > "$T/old/hooks/plan-handoff.sh"
+printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+TEMP="$T/te mp" PLATFORM=windows H="$T/old/hooks" run plan-handoff.sh "$(approve)"
+[[ $ERR == *"DRYRUN windows fallback:"*"te mp"* && $ERR != *"'-File','\""* ]] \
+  && ok "control: with the quoting taken out, the same check sees the path go in bare" || bad "control: with the quoting taken out, the same check sees the path go in bare" "$ERR"
 
 group "plan-handoff --check-done: every way a plan writes its DONE line"
 check() {  # check <name> <DONE line> <want: set|unset> [text that must be in the goal]
