@@ -79,6 +79,18 @@ plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'; run intent-g
 [ ! -f "$T/state/handoff/g1" ] && ok "a WATCH plan arms no handoff" || bad "a WATCH plan arms no handoff" "record exists"
 plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; run intent-guard.sh "$(exitp)"; expect_allow "a sealed WALK plan is allowed"
 [ -f "$T/state/handoff/g1" ] && ok "a WALK plan arms the handoff for its session" || bad "a WALK plan arms the handoff for its session" "no record"
+PROSE="${INTENT/- \*\*DONE\*\* -/- Done when}"
+{ printf '%s\n\n' "$PROSE"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; } > "$T/plan.md"; rm -f "$T/state/handoff/g1"
+run intent-guard.sh "$(exitp)"; expect_deny "a WALK plan whose DONE the handoff cannot read is refused"
+[[ $OUT == *"no grader"* && $OUT == *"- **DONE:**"* ]] && ok "the refusal says how to write the DONE line" || bad "the refusal says how to write the DONE line" "$OUT"
+[ ! -f "$T/state/handoff/g1" ] && ok "a refused WALK arms no handoff" || bad "a refused WALK arms no handoff" "record exists"
+{ printf '%s\n\n' "${INTENT/- \*\*DONE\*\* -/- DONE:}"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; } > "$T/plan.md"
+run intent-guard.sh "$(exitp)"; expect_allow "its twin with a plain '- DONE:' label is allowed"
+{ printf '%s\n\n' "$PROSE"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'; } > "$T/plan.md"
+run intent-guard.sh "$(exitp)"; expect_allow "an unreadable DONE does not block a WATCH plan"
+mkdir -p "$T/stand/hooks"; cp "$H/intent-guard.sh" "$T/stand/hooks/"; printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stand/hooks/plan-handoff.sh"
+{ printf '%s\n\n' "$INTENT"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; } > "$T/plan.md"
+H="$T/stand/hooks" run intent-guard.sh "$(exitp)"; expect_deny "a stand-in handoff that exits 0 without checking does not pass a WALK"
 printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WATCH -->\n' > "$T/plan.md"; run intent-guard.sh "$(exitp)"; expect_allow "a waived plan is allowed"
 run intent-guard.sh "$(jq -nc --arg p "$INTENT
 
@@ -132,6 +144,32 @@ PLATFORM=unix run plan-handoff.sh "$(approve)"
 printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WALK -->\n' > "$T/plan.md"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $OUT == *"goal NOT set"* && $ERR != *"/goal Carry"* ]] && ok "a plan with no DONE slot opens without a goal, and says so" || bad "a plan with no DONE slot opens without a goal, and says so" "$OUT / $ERR"
+
+group "plan-handoff --check-done: every way a plan writes its DONE line"
+check() {  # check <name> <DONE line> <want: set|unset> [text that must be in the goal]
+  local said rc
+  said=$(printf '%s\n\n%s\n%s\n' "## Intent" "- **WHO** - planners." "$2" | bash "$H/plan-handoff.sh" --check-done /p.md 2>&1); rc=$?
+  if [ "$3" = set ]; then
+    [[ $rc -eq 0 && $said == *"goal set from DONE"* ]] && ok "$1" || bad "$1" "rc=$rc $said"
+  else
+    [[ $rc -ne 0 && $said == *"goal NOT set"* ]] && ok "$1" || bad "$1" "rc=$rc $said"
+  fi
+}
+check "bold label with a dash"        '- **DONE** - npm test prints PASS'            set
+check "bold label, colon inside"      '- **DONE:** npm test prints PASS'             set
+check "bold label ending in a stop"   '**DONE.** npm test prints PASS'               set
+check "plain bulleted label"          '- DONE: npm test prints PASS'                 set
+check "bare label, no punctuation"    'DONE npm test prints PASS'                    set
+check "negative control: prose 'Done when' is not a label" '- Done when npm test prints PASS' unset
+check "negative control: a word starting DONE is not a label" '- DONEISH: npm test prints PASS' unset
+check "negative control: no DONE line at all" '- **HOW** - runs locally.' unset
+said=$(printf '%s\n' '- DONE: npm test prints PASS,' '  or stop after two sessions.' '- NOT: no email.' | bash "$H/plan-handoff.sh" --check-done /p.md 2>&1)
+[[ $said == *"goal set from DONE"* ]] && ok "a continued DONE line still builds a goal" || bad "a continued DONE line still builds a goal" "$said"
+plan_txt=$(printf '%s\n' '- DONE: npm test prints PASS,' '  or stop after two sessions.' '- NOT: no email.')
+fresh; printf '%s\n' "$plan_txt" > "$T/plan.md"; mkdir -p "$T/state/handoff"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR == *"prints PASS, or stop after two sessions."* && $ERR != *"no email"* ]] \
+  && ok "the goal carries the continuation and stops at the next plain label" || bad "the goal carries the continuation and stops at the next plain label" "$ERR"
 
 summary
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

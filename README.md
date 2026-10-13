@@ -17,6 +17,8 @@ So this kit ships the interview as a skill, and the enforcement as four hooks.
 1. **No leaving plan mode on assumed intent.** `intent-guard.sh` refuses `ExitPlanMode` until the
    plan file carries an `## Intent` section (who, what, not, why, how, done) sealed with
    `<!-- INTENT-LOCK:CONFIRMED -->`, and a line saying whether you will watch the build or walk away.
+   A walk-away is refused unless the handoff can build a `/goal` from the plan's DONE line, so the
+   fresh session never opens with nothing grading it.
 2. **Every decision as a real choice.** `question-guard.sh` refuses a question box where an option
    has fewer than four sentences (what it is, how it differs, what you will see, what you give up),
    where no option is marked `(Recommended)`, where a label names a file or flag, or where the
@@ -28,8 +30,9 @@ So this kit ships the interview as a skill, and the enforcement as four hooks.
    rounds.
 4. **A fresh session to build.** Answer "walk away" and `plan-handoff.sh` opens a new auto-mode
    session on approval whose first prompt is `/goal`, built from the plan's DONE slot, so a separate
-   grader checks the build from its first turn. On Windows it opens the window; on Mac and Linux it
-   prints the exact command to run.
+   grader checks the build from its first turn. The DONE line may be bold (`**DONE**`, `**DONE:**`,
+   `**DONE.**`), plain (`- DONE: ...`) or bare (`DONE its suite passes`). On Windows it opens the
+   window; on Mac and Linux it prints the exact command to run.
 
 ## Install in three steps
 
@@ -76,6 +79,9 @@ warning, so a check that could not run never looks like one that passed.
   than opening a window.
 - The question guard counts sentences and matches words. It cannot tell whether an option actually
   teaches the choice; that half is the method's job, not the hook's.
+- A `/goal` keeps re-checking until its grader rules the condition met or impossible. If something
+  outside the session breaks the condition, for example another session pushes when the plan said
+  not to, the goal can go round many times. Type `/goal clear` to end it.
 
 ## Why it pays for itself
 

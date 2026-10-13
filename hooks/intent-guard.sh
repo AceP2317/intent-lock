@@ -5,6 +5,7 @@
 #   1. an `## Intent` section closed by <!-- INTENT-LOCK:CONFIRMED -->, or <!-- INTENT-LOCK:WAIVED -->
 #   2. exactly one of <!-- INTENT-LOCK:WATCH --> or <!-- INTENT-LOCK:WALK -->
 # A WALK plan arms plan-handoff.sh for this session, which opens a fresh auto-mode session on approval.
+# A WALK passes only when plan-handoff.sh --check-done can build a /goal from the plan's DONE line.
 #
 # Claude Code injects the plan's path (tool_input.planFilePath) and text (tool_input.plan) into this
 # hook's input. Markers count only on a line of their own, outside fenced or indented code, so a plan
@@ -103,6 +104,19 @@ if has WALK; then
   how=walk
 fi
 [ -n "$how" ] || deny "no-watch-walk" "$name is sealed, and one question is left. Ask the user in the question box: \"Will you watch this build in this window, or walk away from it?\" Watching: approval continues in this window as normal. Walking away: approval opens a fresh auto-mode session that builds the plan under a /goal check made from the DONE slot. Write the answer into the plan as a line of its own, <!-- INTENT-LOCK:WATCH --> or <!-- INTENT-LOCK:WALK -->, then exit plan mode again."
+
+# A walk-away exists to have a separate grader watch the build, so it passes only when the handoff
+# says it can build the /goal from this plan. The handoff answers for itself rather than this file
+# keeping a copy of its DONE pattern. The words are required as well as the exit code, so a missing
+# or stand-in handoff that exits 0 having checked nothing does not count.
+if [ "$how" = walk ]; then
+  ho="$(dirname "${BASH_SOURCE[0]}")/plan-handoff.sh"
+  [ -f "$ho" ] || deny "walk-unchecked" "$name is answered walk away, but plan-handoff.sh is missing beside this hook ($ho), so no fresh session can open. Ask the user whether to watch here instead, and change the plan's line to <!-- INTENT-LOCK:WATCH --> if they agree."
+  said=$(printf '%s' "$plan" | bash "$ho" --check-done "${pf:-(the plan)}" 2>&1); rc=$?
+  said=${said//$'\r'/}
+  [ "$rc" -eq 0 ] && [[ $said == *'goal set from DONE'* ]] \
+    || deny "walk-no-goal" "$name is answered walk away, but the handoff answered \"${said:0:240}\", so the fresh session would open with no grader. Write the DONE slot as its own labelled line, such as '- **DONE:** <the check that settles it>', then exit plan mode again."
+fi
 
 rec="$STATE/handoff/$sid"
 if [ "$how" = walk ]; then

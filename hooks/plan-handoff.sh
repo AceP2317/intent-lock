@@ -14,9 +14,53 @@
 # Fails open: any problem tells Claude, in one line, to say so and carry on in this window.
 #
 # INTENT_LOCK_HANDOFF_DRYRUN=1 prints what would be launched instead of launching it.
+#
+#   plan-handoff.sh --check-done <plan path>   (plan text on stdin)
+# launches nothing: it prints "goal set from DONE (N characters)" and exits 0, or "goal NOT set: ..."
+# and exits 1. intent-guard.sh asks it before letting a walk-away through, so the DONE pattern lives
+# in this file alone.
 set -u
 
 STATE="${INTENT_LOCK_STATE:-$HOME/.claude/intent-lock-state}"
+
+# The DONE slot and the lines that continue it, up to a blank line, the next slot label, a heading,
+# a comment or a top-level bullet. The label may be bold (**DONE**, **DONE:**, **DONE.**), plain
+# (- DONE: ...) or bare (DONE its suite passes). awk matches case-sensitively, so prose such as
+# "Done when ..." is never taken for the label.
+done_of() {
+  printf '%s\n' "$1" | awk '
+    BEGIN { lead = "^(\342\200\224|\342\200\223|:|-|\\.)[ \t]*"
+            label = "^[ \t]*([-*][ \t]+)?(\\*\\*DONE[:.]?\\*\\*|DONE)" }
+    { sub(/\r$/, "") }
+    !on && $0 ~ "^[ \t]*([-*][ \t]+)?(\\*\\*DONE[:.]?\\*\\*|DONE([^A-Za-z0-9_]|$))" {
+      on = 1; l = $0; sub(label, "", l); sub(/^[ \t]*/, "", l)
+      sub(lead, "", l); out = l; next }
+    on && (/^[ \t]*$/ || /^[ \t]*([-*][ \t]+)?\*\*[A-Z][A-Za-z ]*[:.]?\*\*/ \
+        || /^[ \t]*([-*][ \t]+)?(WHO|WHAT|NOT|WHY|HOW|DONE)([^A-Za-z0-9_]|$)/ \
+        || /^[ \t]*([-*][ \t]+)?[A-Z][A-Z]+[ \t]*(:|\342\200\224|\342\200\223)/ \
+        || /^[ \t]*#/ || /^[ \t]*<!--/ || /^[-*][ \t]/) { exit }
+    on { l = $0; gsub(/^[ \t]+|[ \t]+$/, "", l); out = out " " l }
+    END { gsub(/[ \t]+/, " ", out); sub(/^ /, "", out); print out }'
+}
+
+# Sets cond and goal_note from the plan text and the path shown to the new session.
+goal_for() {
+  local d; d=$(done_of "$1"); cond=''
+  if [ -n "${d// /}" ]; then
+    cond="Carry out the approved plan at $2; read it first, it is sealed, approved and the scope. Done when all of this is shown by output in this conversation: $d"
+    if [ "${#cond}" -le 4000 ]; then goal_note="goal set from DONE (${#cond} characters)"
+    else goal_note="goal NOT set: the condition would be ${#cond} characters, past the 4,000 /goal accepts"; cond=''; fi
+  else
+    goal_note="goal NOT set: the plan has no DONE line this hook can read"
+  fi
+}
+
+if [ "${1:-}" = "--check-done" ]; then
+  goal_for "$(cat 2>/dev/null)" "${2:-(the plan)}"
+  printf '%s\n' "$goal_note"
+  [ -n "$cond" ]; exit
+fi
+
 input=$(cat 2>/dev/null) || input=''
 
 re='"session_id"[[:space:]]*:[[:space:]]*"([^"]+)"'
@@ -47,27 +91,9 @@ if [ -z "${plan//[[:space:]]/}" ] && [ -n "$plan_path" ] && { : < "$plan_path"; 
 fi
 [ -n "${plan//[[:space:]]/}" ] || say "The walk-away handoff was armed, but the approved plan could not be read, so no fresh session was opened. Tell the user in one line and carry on in this window."
 
-# The DONE slot: a "**DONE**" line (bulleted or not, colon inside or outside the bold) and the
-# lines that continue it, up to a blank line, the next bold slot, a heading, a comment or a bullet.
-done_text=$(printf '%s\n' "$plan" | awk '
-  BEGIN { lead = "^(\342\200\224|\342\200\223|:|-)[ \t]*" }
-  { sub(/\r$/, "") }
-  !on && /^[ \t]*([-*][ \t]+)?\*\*DONE:?\*\*/ {
-    on = 1; l = $0; sub(/^[ \t]*([-*][ \t]+)?\*\*DONE:?\*\*[ \t]*/, "", l)
-    sub(lead, "", l); out = l; next }
-  on && (/^[ \t]*$/ || /^[ \t]*([-*][ \t]+)?\*\*[A-Z][A-Za-z ]*:?\*\*/ || /^[ \t]*#/ || /^[ \t]*<!--/ || /^[-*][ \t]/) { exit }
-  on { l = $0; gsub(/^[ \t]+|[ \t]+$/, "", l); out = out " " l }
-  END { gsub(/[ \t]+/, " ", out); print out }')
-
 shown_path="$plan_path"; [ -n "$shown_path" ] || shown_path="(the plan approved in the previous session)"
-goal_note=''
-if [ -n "${done_text// /}" ]; then
-  cond="Carry out the approved plan at $shown_path; read it first, it is sealed, approved and the scope. Done when all of this is shown by output in this conversation: $done_text"
-  if [ "${#cond}" -le 4000 ]; then prompt="/goal $cond"; goal_note="goal set from the plan's DONE slot (${#cond} characters)"
-  else goal_note="goal NOT set: the condition would be ${#cond} characters, past the 4,000 /goal accepts"; fi
-else
-  goal_note="goal NOT set: the plan has no DONE slot"
-fi
+goal_for "$plan" "$shown_path"
+[ -n "$cond" ] && prompt="/goal $cond"
 [ -n "${prompt:-}" ] || prompt="Carry out the approved plan at $shown_path. Read it first; it is sealed, approved and the scope. No /goal was set, because ${goal_note#goal NOT set: }, so tell the user no separate grader is watching this build."
 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null | tr -d '\r'); [ -n "$cwd" ] || cwd="$PWD"
