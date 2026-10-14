@@ -114,8 +114,13 @@ if [ "$how" = walk ]; then
   [ -f "$ho" ] || deny "walk-unchecked" "$name is answered walk away, but plan-handoff.sh is missing beside this hook ($ho), so no fresh session can open. Ask the user whether to watch here instead, and change the plan's line to <!-- INTENT-LOCK:WATCH --> if they agree."
   said=$(printf '%s' "$plan" | bash "$ho" --check-done "${pf:-(the plan)}" 2>&1); rc=$?
   said=${said//$'\r'/}
+  # The advice follows the handoff's reason: a plan refused for its length has a DONE line already.
+  case "$said" in
+    *'4,000'*) fix="Shorten the DONE slot until the condition fits under 4,000 characters" ;;
+    *) fix="Write the DONE slot as its own labelled line, such as '- **DONE:** <the check that settles it>'" ;;
+  esac
   [ "$rc" -eq 0 ] && [[ $said == *'goal set from DONE'* ]] \
-    || deny "walk-no-goal" "$name is answered walk away, but the handoff answered \"${said:0:240}\", so the fresh session would open with no grader. Write the DONE slot as its own labelled line, such as '- **DONE:** <the check that settles it>', then exit plan mode again."
+    || deny "walk-no-goal" "$name is answered walk away, but the handoff answered \"${said:0:240}\", so the fresh session would open with no grader. $fix, then exit plan mode again."
 fi
 
 rec="$STATE/handoff/$sid"

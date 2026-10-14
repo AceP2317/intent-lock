@@ -23,24 +23,71 @@ set -u
 
 STATE="${INTENT_LOCK_STATE:-$HOME/.claude/intent-lock-state}"
 
-# The DONE slot and the lines that continue it, up to a blank line, the next slot label, a heading,
-# a comment or a top-level bullet. The label may be bold (**DONE**, **DONE:**, **DONE.**), plain
-# (- DONE: ...) or bare (DONE its suite passes). awk matches case-sensitively, so prose such as
-# "Done when ..." is never taken for the label.
+# The DONE slot and the lines that continue it, up to the next slot label, a heading, a comment or a
+# top-level bullet. The label may be bold (**DONE**, **DONE:**, **DONE.**, **Done:**), plain
+# (- DONE: ..., - Done: ...) or bare (DONE its suite passes). awk matches case-sensitively, so prose
+# such as "Done when ..." is never taken for the label. Four rules keep the grader's criteria whole:
+#   * a DONE ending in a colon is a lead-in, and the list under it (numbered or bulleted, at the
+#     margin or after a blank line) is DONE too;
+#   * a line indented deeper than the DONE line continues it whatever word it opens with, so
+#     "  - CSV: the export matches" or "  NOT one case slips through" does not cut DONE short;
+#   * DONE is looked for in the Intent section first, and never inside a code fence or an HTML
+#     comment, so a quoted template or an old draft is not taken for it;
+#   * a blank line ends DONE unless text indented under it, or the list under a lead-in, follows.
 done_of() {
   printf '%s\n' "$1" | awk '
-    BEGIN { lead = "^(\342\200\224|\342\200\223|:|-|\\.)[ \t]*"
-            label = "^[ \t]*([-*][ \t]+)?(\\*\\*DONE[:.]?\\*\\*|DONE)" }
-    { sub(/\r$/, "") }
-    !on && $0 ~ "^[ \t]*([-*][ \t]+)?(\\*\\*DONE[:.]?\\*\\*|DONE([^A-Za-z0-9_]|$))" {
-      on = 1; l = $0; sub(label, "", l); sub(/^[ \t]*/, "", l)
-      sub(lead, "", l); out = l; next }
-    on && (/^[ \t]*$/ || /^[ \t]*([-*][ \t]+)?\*\*[A-Z][A-Za-z ]*[:.]?\*\*/ \
-        || /^[ \t]*([-*][ \t]+)?(WHO|WHAT|NOT|WHY|HOW|DONE)([^A-Za-z0-9_]|$)/ \
-        || /^[ \t]*([-*][ \t]+)?[A-Z][A-Z]+[ \t]*(:|\342\200\224|\342\200\223)/ \
-        || /^[ \t]*#/ || /^[ \t]*<!--/ || /^[-*][ \t]/) { exit }
-    on { l = $0; gsub(/^[ \t]+|[ \t]+$/, "", l); out = out " " l }
-    END { gsub(/[ \t]+/, " ", out); sub(/^ /, "", out); print out }'
+    BEGIN { lead = "^(\342\200\224|\342\200\223|:|-|\\.)[ \t]*" }
+    { sub(/\r$/, ""); L[++n] = $0 }
+    function indent(s,   t) { t = s; sub(/^[ \t]+/, "", t); return length(s) - length(t) }
+    function islabel(s) {
+      return s ~ /^[ \t]*([-*][ \t]+)?\*\*[Dd][Oo][Nn][Ee][:.]?\*\*/ \
+          || s ~ /^[ \t]*([-*][ \t]+)?DONE([^A-Za-z0-9_]|$)/ \
+          || s ~ /^[ \t]*([-*][ \t]+)?[Dd][Oo][Nn][Ee][ \t]*:/ }
+    function slotlabel(s) {
+      return s ~ /^[ \t]*([-*][ \t]+)?\*\*[A-Z][A-Za-z ]*[:.]?\*\*/ \
+          || s ~ /^[ \t]*([-*][ \t]+)?(WHO|WHAT|NOT|WHY|HOW|DONE)[ \t]*(:|-|\342\200\224|\342\200\223)/ }
+    function slotstop(s) {
+      return slotlabel(s) || s ~ /^[ \t]*([-*][ \t]+)?(WHO|WHAT|NOT|WHY|HOW|DONE)([^A-Za-z0-9_]|$)/ \
+          || s ~ /^[ \t]*([-*][ \t]+)?[A-Z][A-Z]+[ \t]*(:|\342\200\224|\342\200\223)/ \
+          || s ~ /^[ \t]*#/ || s ~ /^[ \t]*<!--/ || s ~ /^[-*][ \t]/ || s ~ /^[0-9]+\.[ \t]/ }
+    function listitem(s) { return s ~ /^[ \t]*([-*]|[0-9]+[.)])[ \t]/ }
+    END {
+      for (i = 1; i <= n; i++) {
+        s = L[i]; P[i] = 0
+        if (com) { if (s ~ /-->/) com = 0; continue }
+        if (s ~ /^[ \t]*(```|~~~)/) { fence = !fence; continue }
+        if (fence) continue
+        if (s ~ /^[ \t]*<!--/) { if (s !~ /-->/) com = 1; continue }
+        P[i] = 1
+      }
+      for (i = 1; i <= n; i++) if (L[i] ~ /^#+[ \t]*Intent([^A-Za-z0-9_]|$)/) {
+        lv = match(L[i], /[^#]/) - 1; is = i; ie = n + 1
+        for (j = i + 1; j <= n; j++) if (L[j] ~ /^#+[ \t]/ && match(L[j], /[^#]/) - 1 <= lv) { ie = j; break }
+        break }
+      for (i = is; is && i < ie; i++) if (P[i] && islabel(L[i])) { start = i; break }
+      if (!start) for (i = 1; i <= n; i++) if (P[i] && islabel(L[i])) { start = i; break }
+      if (!start) { print ""; exit }
+      ind = indent(L[start]); out = L[start]
+      sub(/^[ \t]*([-*][ \t]+)?(\*\*[Dd][Oo][Nn][Ee][:.]?\*\*|DONE|[Dd][Oo][Nn][Ee])/, "", out)
+      sub(/^[ \t]*/, "", out); sub(lead, "", out)
+      for (j = start + 1; j <= n; j++) {
+        s = L[j]; leadin = inlist || out ~ /:[ \t]*$/
+        if (s ~ /^[ \t]*$/) {
+          k = j + 1; while (k <= n && L[k] ~ /^[ \t]*$/) k++
+          if (k > n || L[k] ~ /^[ \t]*(#|<!--|```|~~~)/) break
+          if (indent(L[k]) > ind) continue
+          if (leadin && listitem(L[k]) && !slotlabel(L[k])) continue
+          break
+        }
+        if (s ~ /^[ \t]*(#|<!--)/) break
+        t = s; gsub(/^[ \t]+|[ \t]+$/, "", t)
+        if (indent(s) > ind) { out = out " " t; continue }
+        if (leadin && listitem(s) && !slotlabel(s)) { inlist = 1; out = out " " t; continue }
+        if (slotstop(s)) break
+        out = out " " t
+      }
+      gsub(/[ \t]+/, " ", out); sub(/^ /, "", out); sub(/ $/, "", out); print out
+    }'
 }
 
 # Sets cond and goal_note from the plan text and the path shown to the new session.

@@ -196,6 +196,25 @@ fresh; printf '%s\n' "$plan_txt" > "$T/plan.md"; mkdir -p "$T/state/handoff"; pr
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $ERR == *"prints PASS, or stop after two sessions."* && $ERR != *"no email"* ]] \
   && ok "the goal carries the continuation and stops at the next plain label" || bad "the goal carries the continuation and stops at the next plain label" "$ERR"
+check "bold label in title case"      '- **Done:** npm test prints PASS'             set
+check "plain label in title case before a colon" '- Done: npm test prints PASS'      set
+# goal_of <plan lines...>: the Windows dry run for that plan, in $ERR.
+goal_of() { fresh; printf '%s\n' "$@" > "$T/plan.md"; mkdir -p "$T/state/handoff"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+            PLATFORM=windows run plan-handoff.sh "$(approve)"; }
+goal_of '## Intent' '' '**DONE.** The transcript must show, in order:' '' '- LEADIN_ONE green.' '- LEADIN_TWO matches.' '' '## Context' 'LEAK_LEADIN'
+[[ $ERR == *LEADIN_ONE*LEADIN_TWO* && $ERR != *LEAK_LEADIN* ]] \
+  && ok "a DONE lead-in keeps the list under it" || bad "a DONE lead-in keeps the list under it" "$ERR"
+goal_of '## Intent' '' '- **DONE:** all of these hold:' '  - NEST_ONE passes' '  - CSV: NEST_TWO matches' '  NOT one NEST_THREE slips' '- **WHY:** LEAK_NEST'
+[[ $ERR == *NEST_ONE*NEST_TWO*NEST_THREE* && $ERR != *LEAK_NEST* ]] \
+  && ok "a line indented under DONE continues it, whatever word it opens with" || bad "a line indented under DONE continues it, whatever word it opens with" "$ERR"
+goal_of '```' '- **DONE:** LEAK_FENCE template' '```' '' '## Intent' '' '- **DONE:** FENCE_REAL passes'
+[[ $ERR == *FENCE_REAL* && $ERR != *LEAK_FENCE* ]] \
+  && ok "a DONE inside a code fence is skipped for the Intent section's" || bad "a DONE inside a code fence is skipped for the Intent section's" "$ERR"
+long=$(printf '%4100s' '' | tr ' ' x)
+fresh; { printf '%s\n\n' "${INTENT/- \*\*DONE\*\* -/- **DONE** - $long}"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; } > "$T/plan.md"
+run intent-guard.sh "$(exitp)"
+[[ $OUT == *"4,000"* && $OUT == *"Shorten the DONE slot"* ]] \
+  && ok "a DONE refused for its length is told to shorten, not to relabel" || bad "a DONE refused for its length is told to shorten, not to relabel" "$OUT"
 
 summary
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
