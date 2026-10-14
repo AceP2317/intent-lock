@@ -174,14 +174,23 @@ psqq() { psq "\"$1\""; }
 wcwd=$(cygpath -w "$cwd" 2>/dev/null || printf '%s' "$cwd")
 tmp=$(cygpath -w "${TEMP:-/tmp}" 2>/dev/null || printf '%s' "${TEMP:-/tmp}")
 launcher="$tmp\\intent-lock-handoff-$sid.ps1"
-body="Set-Location -LiteralPath $(psq "$wcwd")
+claim="$tmp\\intent-lock-handoff-$sid.claim"
+# The launcher enters the plan's folder or stops, because claude started anywhere else builds in the
+# wrong place. Then it CLAIMS the launch: this hook claims the same file when its wait runs out, and
+# creating it is all-or-nothing, so a window that starts late finds the handoff called off and builds
+# nothing. The claim runs only from the real launcher file, so a printed copy run by a test writes none.
+body="try { Set-Location -LiteralPath $(psq "$wcwd") -ErrorAction Stop; \$hand = 'STARTED' } catch { \$hand = 'FOLDER-FAILED: ' + \$_.Exception.Message }
+if (Test-Path -LiteralPath $(psq "$launcher")) { try { \$f = [IO.File]::Open($(psq "$claim"), 'CreateNew', 'Write'); \$w = [IO.StreamWriter]::new(\$f); \$w.Write(\$hand); \$w.Close() } catch { Write-Host 'intent-lock: this handoff was called off, because the session that asked for it had stopped waiting.'; return } }
+if (\$hand -ne 'STARTED') { Write-Host ('intent-lock: ' + \$hand); return }
 Remove-Item -LiteralPath $(psq "$launcher") -Force -ErrorAction SilentlyContinue
 claude --permission-mode auto$eff_flag $(psq "$prompt")"
 
 shell=pwsh.exe; command -v pwsh.exe >/dev/null 2>&1 || shell=powershell.exe
 # No -d for Windows Terminal: the launcher's first line moves into the folder itself, so the folder
 # never has to survive wt.exe's own parsing, where a semicolon also separates commands.
-fallback="Start-Process $shell -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$(psqq "$launcher") -WorkingDirectory $(psq "$wcwd")"
+# No -WorkingDirectory: Start-Process refuses a folder holding square brackets, and the launcher enters
+# the folder itself on its first line.
+fallback="Start-Process $shell -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$(psqq "$launcher")"
 
 if [ "${INTENT_LOCK_HANDOFF_DRYRUN:-}" = 1 ]; then
   printf 'DRYRUN windows launcher %s:\n%s\n' "$launcher" "$body" >&2
@@ -191,21 +200,41 @@ if [ "${INTENT_LOCK_HANDOFF_DRYRUN:-}" = 1 ]; then
 fi
 
 launcher_u=$(cygpath -u "$launcher" 2>/dev/null || printf '%s' "$launcher")
+claim_u=$(cygpath -u "$claim" 2>/dev/null || printf '%s' "$claim")
+# The names are per session, so a claim left by an earlier handoff in this session is cleared first.
+rm -f "$claim_u" 2>/dev/null
 printf '%s\n' "$body" > "$launcher_u" 2>/dev/null \
   || say "The walk-away handoff was armed, but its launcher could not be written to $launcher, so no fresh session was opened. Tell the user in one line and carry on in this window."
 # PSModulePath is cleared on the way out: started from PowerShell 7, Windows PowerShell inherits 7's
 # module folders first and can lose a built-in command (seen 2026-08-22 on the machine this came from).
-if command -v wt.exe >/dev/null 2>&1; then
+# INTENT_LOCK_HANDOFF_NOWINDOW=1 (tests only) opens no window, and the wait below runs as usual.
+if [ "${INTENT_LOCK_HANDOFF_NOWINDOW:-}" = 1 ]; then
+  :
+elif command -v wt.exe >/dev/null 2>&1; then
   env -u PSModulePath wt.exe "$shell" -NoExit -ExecutionPolicy Bypass -File "$launcher" >/dev/null 2>&1 &
 else
   env -u PSModulePath powershell.exe -NoProfile -Command "$fallback" >/dev/null 2>&1 &
 fi
 # Starting the terminal proves nothing: a launch that fails is reported inside the new window, where
-# this hook cannot see it. The launcher deletes itself on its second line, so its disappearance is
-# the proof that the new window ran it.
-waited=0
-while [ -f "$launcher_u" ] && [ "$waited" -lt 25 ]; do sleep 1; waited=$((waited + 1)); done
-if [ -f "$launcher_u" ]; then
-  say "THE PLAN HANDOFF DID NOT START: a new window was asked for, but within 25 seconds nothing ran its launcher, so no fresh session is building this plan. Tell the user in one line, and give them this command to open it by hand: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so."
+# this hook cannot see it. The claim says what happened. Until 2026-10-14 the proof was the launcher
+# deleting itself, and a delete that failed quietly, or a window slower than the wait, read as "did not
+# start" while the window went on to build: two sessions on one plan.
+limit="${INTENT_LOCK_HANDOFF_WAIT:-60}"; state=''; waited=0
+while [ "$waited" -lt "$limit" ]; do
+  if [ -s "$claim_u" ]; then state=$(cat "$claim_u" 2>/dev/null); [ -n "$state" ] && break; fi
+  sleep 1; waited=$((waited + 1))
+done
+if [ -z "$state" ]; then
+  if ( set -o noclobber; printf 'CALLED-OFF' > "$claim_u" ) 2>/dev/null; then state=CALLED-OFF
+  else sleep 2; state=$(cat "$claim_u" 2>/dev/null); fi
 fi
+case "$state" in
+  STARTED) rm -f "$claim_u" 2>/dev/null ;;
+  FOLDER-FAILED*) rm -f "$claim_u" 2>/dev/null
+    say "THE PLAN HANDOFF DID NOT START: the new window opened but could not enter $wcwd (${state#FOLDER-FAILED: }), so no fresh session is building this plan. Tell the user in one line. The launcher is kept at $launcher; once the folder is back it opens with: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so." ;;
+  CALLED-OFF)
+    say "THE PLAN HANDOFF DID NOT START: a new window was asked for, but within $limit seconds nothing ran its launcher, so the handoff was called off and a window that starts later builds nothing. Tell the user in one line; to open it by hand, delete $claim and run: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so." ;;
+  *)
+    say "THE PLAN HANDOFF MAY NOT HAVE STARTED: its claim at $claim could not be read, so whether a fresh session is building this plan is unknown. Tell the user in one line, and ask them to look for the new window before anything is built here." ;;
+esac
 say "THE PLAN HANDOFF HAS FIRED: a fresh auto-mode session has started in a new window to build this plan ($goal_note). Do not start work on this plan here, because two sessions building one plan collide. Tell the user the new window has it and this one can be closed, then stop."

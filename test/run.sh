@@ -216,6 +216,37 @@ run intent-guard.sh "$(exitp)"
 [[ $OUT == *"4,000"* && $OUT == *"Shorten the DONE slot"* ]] \
   && ok "a DONE refused for its length is told to shorten, not to relabel" || bad "a DONE refused for its length is told to shorten, not to relabel" "$OUT"
 
+group "plan-handoff: the new window claims the launch, and a late one builds nothing"
+# The real Windows path with no window opened, in this test's own temp folder; a stand-in claude.
+claim_run() {  # claim_run <session> <wait seconds> <folder>; output in $T/<session>.out
+  jq -nc --arg p "$T/plan.md" --arg c "$(cygpath -w "$3")" --arg s "$1" \
+     '{session_id:$s,cwd:$c,tool_name:"ExitPlanMode",tool_input:{planFilePath:$p},tool_response:{filePath:$p}}' \
+  | HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="$KIT" INTENT_LOCK_PLATFORM=windows TEMP="$T/tmp" \
+    INTENT_LOCK_HANDOFF_NOWINDOW=1 INTENT_LOCK_HANDOFF_WAIT="$2" bash "$H/plan-handoff.sh" > "$T/$1.out" 2>&1
+}
+launcher_ready() { local i; for i in $(seq 1 100); do [ -f "$T/tmp/intent-lock-handoff-$1.ps1" ] && return 0; sleep 0.2; done; return 1; }
+stand_in() { pwsh.exe -NoProfile -Command "function claude { 'CLAUDE-RAN in ' + (Get-Location).Path }; . '$(cygpath -w "$T/tmp/intent-lock-handoff-$1.ps1")'" 2>&1 | tr -d '\r'; }
+if command -v pwsh.exe >/dev/null 2>&1; then
+  fresh; mkdir -p "$T/tmp" "$T/state/handoff" "$T/w1" "$T/w2" "$T/w3"
+  printf '%s\n' '## Intent' '' '- DONE: the stand-in reports.' > "$T/plan.md"
+  for s in c1 c2 c3; do printf '%s\n' "$T/plan.md" > "$T/state/handoff/$s"; done
+  claim_run c1 30 "$T/w1" & j1=$!
+  claim_run c3 30 "$T/w3" & j3=$!
+  claim_run c2 2 "$T/w2"
+  launcher_ready c1 && o1=$(stand_in c1) || o1="no launcher was written"
+  launcher_ready c3 && { rm -rf "$T/w3"; o3=$(stand_in c3); } || o3="no launcher was written"
+  o2=$(stand_in c2)
+  wait "$j1" "$j3"
+  [[ $o1 == *"CLAUDE-RAN in $(cygpath -w "$T/w1")"* && $(cat "$T/c1.out") == *"HAS FIRED"* ]] \
+    && ok "a window that claims the launch in time builds in the plan's folder" || bad "a window that claims the launch in time builds in the plan's folder" "$o1 / $(cat "$T/c1.out")"
+  [[ $(cat "$T/c2.out") == *"called off"* && $o2 == *"called off"* && $o2 != *CLAUDE-RAN* ]] \
+    && ok "a window that starts after the wait ran out builds nothing" || bad "a window that starts after the wait ran out builds nothing" "$o2 / $(cat "$T/c2.out")"
+  [[ $o3 == *FOLDER-FAILED* && $o3 != *CLAUDE-RAN* && $(cat "$T/c3.out") == *"could not enter"* ]] \
+    && ok "a window whose folder is gone stops instead of building elsewhere" || bad "a window whose folder is gone stops instead of building elsewhere" "$o3 / $(cat "$T/c3.out")"
+else
+  ok "skipped: no pwsh.exe here, so the claim cannot be run"
+fi
+
 summary
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
