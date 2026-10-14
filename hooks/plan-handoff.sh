@@ -146,10 +146,12 @@ fi
 launcher_u=$(cygpath -u "$launcher" 2>/dev/null || printf '%s' "$launcher")
 printf '%s\n' "$body" > "$launcher_u" 2>/dev/null \
   || say "The walk-away handoff was armed, but its launcher could not be written to $launcher, so no fresh session was opened. Tell the user in one line and carry on in this window."
+# PSModulePath is cleared on the way out: started from PowerShell 7, Windows PowerShell inherits 7's
+# module folders first and can lose a built-in command (seen 2026-08-22 on the machine this came from).
 if command -v wt.exe >/dev/null 2>&1; then
-  wt.exe "$shell" -NoExit -ExecutionPolicy Bypass -File "$launcher" >/dev/null 2>&1 &
+  env -u PSModulePath wt.exe "$shell" -NoExit -ExecutionPolicy Bypass -File "$launcher" >/dev/null 2>&1 &
 else
-  powershell.exe -NoProfile -Command "$fallback" >/dev/null 2>&1 &
+  env -u PSModulePath powershell.exe -NoProfile -Command "$fallback" >/dev/null 2>&1 &
 fi
 # Starting the terminal proves nothing: a launch that fails is reported inside the new window, where
 # this hook cannot see it. The launcher deletes itself on its second line, so its disappearance is
