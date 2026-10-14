@@ -141,6 +141,17 @@ printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
 PLATFORM=unix run plan-handoff.sh "$(approve)"
 [[ $OUT == *"claude --permission-mode auto '/goal Carry out"* && $OUT == *"Do not start work on this plan here"* ]] \
   && ok "armed on Mac or Linux: the exact command is handed to Claude to show" || bad "armed on Mac or Linux: the exact command is handed to Claude to show" "$OUT"
+# The approving window's effort level rides along; the run just above carried none, which is the control.
+[[ $OUT != *"--effort"* ]] && ok "control: an approval with no effort level passes no --effort" || bad "control: an approval with no effort level passes no --effort" "$OUT"
+approve_at() { approve | jq -c --arg e "$1" '. + {effort:{level:$e}}'; }
+printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+PLATFORM=windows run plan-handoff.sh "$(approve_at xhigh)"
+[[ $ERR == *"claude --permission-mode auto --effort xhigh '/goal Carry out"* ]] \
+  && ok "armed at xhigh: the new window starts at xhigh" || bad "armed at xhigh: the new window starts at xhigh" "$ERR"
+printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+PLATFORM=unix run plan-handoff.sh "$(approve_at "max'; rm -rf ~; '")"
+[[ $OUT == *"claude --permission-mode auto '/goal Carry out"* && $OUT != *"rm -rf"* ]] \
+  && ok "a level the CLI does not take is dropped, never pasted into the command" || bad "a level the CLI does not take is dropped, never pasted into the command" "$OUT"
 printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WALK -->\n' > "$T/plan.md"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $OUT == *"goal NOT set"* && $ERR != *"/goal Carry"* ]] && ok "a plan with no DONE slot opens without a goal, and says so" || bad "a plan with no DONE slot opens without a goal, and says so" "$OUT / $ERR"

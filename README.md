@@ -31,8 +31,9 @@ So this kit ships the interview as a skill, and the enforcement as four hooks.
 4. **A fresh session to build.** Answer "walk away" and `plan-handoff.sh` opens a new auto-mode
    session on approval whose first prompt is `/goal`, built from the plan's DONE slot, so a separate
    grader checks the build from its first turn. The DONE line may be bold (`**DONE**`, `**DONE:**`,
-   `**DONE.**`), plain (`- DONE: ...`) or bare (`DONE its suite passes`). On Windows it opens the
-   window; on Mac and Linux it prints the exact command to run.
+   `**DONE.**`), plain (`- DONE: ...`) or bare (`DONE its suite passes`). The new session starts
+   at the effort level the planning window had when you approved, not the saved default. On Windows
+   it opens the window; on Mac and Linux it prints the exact command to run.
 
 ## Install in three steps
 

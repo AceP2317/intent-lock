@@ -97,8 +97,16 @@ goal_for "$plan" "$shown_path"
 [ -n "${prompt:-}" ] || prompt="Carry out the approved plan at $shown_path. Read it first; it is sealed, approved and the scope. No /goal was set, because ${goal_note#goal NOT set: }, so tell the user no separate grader is watching this build."
 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null | tr -d '\r'); [ -n "$cwd" ] || cwd="$PWD"
+# The approving window's effort level, from this hook's own input. Without it the new session starts
+# at the saved default for its model, so a plan made at a raised level is built below it. --effort
+# sets that session alone. Only a level `claude --help` lists is passed; anything else is dropped.
+effort=$(printf '%s' "$input" | jq -r '.effort.level? // empty' 2>/dev/null | tr -d '\r')
+case "$effort" in
+  low|medium|high|xhigh|max) eff_flag=" --effort $effort"; goal_note="$goal_note; effort $effort carried" ;;
+  *) eff_flag=''; goal_note="$goal_note; effort not carried, so the saved default applies" ;;
+esac
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-unix_cmd="cd $(sq "$cwd") && claude --permission-mode auto $(sq "$prompt")"
+unix_cmd="cd $(sq "$cwd") && claude --permission-mode auto$eff_flag $(sq "$prompt")"
 
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) win=1 ;; *) win=0 ;; esac
 [ "${OS:-}" = "Windows_NT" ] && win=1
@@ -121,7 +129,7 @@ tmp=$(cygpath -w "${TEMP:-/tmp}" 2>/dev/null || printf '%s' "${TEMP:-/tmp}")
 launcher="$tmp\\intent-lock-handoff-$sid.ps1"
 body="Set-Location -LiteralPath $(psq "$wcwd")
 Remove-Item -LiteralPath $(psq "$launcher") -Force -ErrorAction SilentlyContinue
-claude --permission-mode auto $(psq "$prompt")"
+claude --permission-mode auto$eff_flag $(psq "$prompt")"
 
 shell=pwsh.exe; command -v pwsh.exe >/dev/null 2>&1 || shell=powershell.exe
 # No -d for Windows Terminal: the launcher's first line moves into the folder itself, so the folder
