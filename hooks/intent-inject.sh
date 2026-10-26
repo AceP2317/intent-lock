@@ -22,6 +22,10 @@ warn() { printf 'intent-lock: %s\n' "$1" >&2; }
 
 if ! command -v jq >/dev/null 2>&1; then
   warn "jq is not installed, so plan mode is running WITHOUT the intent-lock method"
+  # stderr from a hook that exits 0 reaches only the debug log, so in plan mode, read without jq, the
+  # user's screen and Claude are told as well. Every other prompt stays quiet.
+  pm='"permission_mode"[[:space:]]*:[[:space:]]*"plan"'
+  [[ $input =~ $pm ]] && printf '%s\n' '{"systemMessage":"intent-lock: jq is not installed, so plan mode is running WITHOUT the intent-lock method","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"intent-lock: jq is not installed, so plan mode is running WITHOUT the intent-lock method. Say this to the user in your next reply."}}'
   exit 0
 fi
 mode=$(printf '%s' "$input" | jq -r '.permission_mode // empty' 2>/dev/null | tr -d '\r')
@@ -62,5 +66,6 @@ if { : < "$rules"; } 2>/dev/null; then
   sed '1,/^- /{/^- /!d}' "$rules"
 else
   warn "question rules not found at $rules; the method loaded without them"
+  printf '\n%s\n' "intent-lock: question rules not found at $rules, so the method loaded without them. Tell the user in one line."
 fi
 exit 0

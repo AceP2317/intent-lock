@@ -52,6 +52,18 @@ KITDIR="$T/emptykit" run intent-inject.sh '{"session_id":"s3","permission_mode":
 fresh; touch "$T/home/.claude/.intent-off"
 run intent-inject.sh '{"session_id":"s4","permission_mode":"plan","prompt":"x"}'
 [[ -z $OUT && $ERR == *"switched off"* ]] && ok "the off switch silences the method and says so on stderr" || bad "the off switch silences the method and says so on stderr" "$OUT / $ERR"
+# A warning only stderr carries reaches Claude Code's debug log alone, so these are said where Claude reads.
+fresh; mkdir -p "$T/norules/skill/intent-lock"; cp "$KIT/skill/intent-lock/SKILL.md" "$T/norules/skill/intent-lock/"
+KITDIR="$T/norules" run intent-inject.sh '{"session_id":"s5","permission_mode":"plan","prompt":"x"}'
+[[ $OUT == *"## Six slots"* && $OUT == *"question rules not found"* ]] && ok "missing question rules are told to Claude with the method" || bad "missing question rules are told to Claude with the method" "$OUT"
+if PATH=/usr/bin command -v jq >/dev/null 2>&1; then printf '  SKIP  the jq-missing arms: /usr/bin holds a jq here\n'
+else
+  OUT=$(printf '%s' '{"session_id":"s6","permission_mode":"plan","prompt":"x"}' | HOME="$T/home" INTENT_LOCK_KIT="$KIT" PATH=/usr/bin "$BASH" "$H/intent-inject.sh" 2>/dev/null)
+  [[ $OUT == *'"systemMessage":"intent-lock: jq is not installed'* ]] && printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 \
+    && ok "with no jq, plan mode says the method is not running" || bad "with no jq, plan mode says the method is not running" "$OUT"
+  OUT=$(printf '%s' '{"session_id":"s6","permission_mode":"default","prompt":"x"}' | HOME="$T/home" INTENT_LOCK_KIT="$KIT" PATH=/usr/bin "$BASH" "$H/intent-inject.sh" 2>/dev/null)
+  [ -z "$OUT" ] && ok "negative control: with no jq, a prompt outside plan mode hears nothing" || bad "negative control: with no jq, a prompt outside plan mode hears nothing" "$OUT"
+fi
 
 # --- intent-guard --------------------------------------------------------------------------------
 group "intent-guard: no exit from plan mode until the plan is sealed"
@@ -99,13 +111,19 @@ run intent-guard.sh "$(jq -nc --arg p "$INTENT
 expect_allow "plan text given inline with no file path is read"
 # A fail-open exit is told to the user and to Claude in one object: stderr from a hook that exits 0
 # reaches only Claude Code's debug log, so a warning written there alone is a silent one.
-said() { ! denied && [[ $OUT == *"\"systemMessage\":\"intent-lock: $1"* && $OUT == *"\"additionalContext\":\"intent-lock: $1"* ]]; }
+said() { ! denied && [[ $OUT == *"\"systemMessage\":\"$1"* && $OUT == *"\"additionalContext\":\"$1"* ]]; }
+# nojq <hook> <json>: the hook run with only /usr/bin on PATH, where this machine keeps no jq.
+nojq() { OUT=$(printf '%s' "$2" | HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="$KIT" PATH=/usr/bin "$BASH" "$H/$1" 2>/dev/null); }
+NOJQ=1; PATH=/usr/bin command -v jq >/dev/null 2>&1 && { NOJQ=''; printf '  SKIP  the jq-missing arms: /usr/bin holds a jq here\n'; }
 run intent-guard.sh '{"session_id":"g3","tool_name":"ExitPlanMode","tool_input":{}}'
-said "could not read the plan" && [[ $ERR == *"NOT checked"* ]] && ok "no readable plan fails open, and tells the user and Claude" \
+said "intent-lock: could not read the plan" && [[ $ERR == *"NOT checked"* ]] && ok "no readable plan fails open, and tells the user and Claude" \
   || bad "no readable plan fails open, and tells the user and Claude" "$OUT / $ERR"
 fresh; : > "$T/state/handoff"; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; run intent-guard.sh "$(exitp)"
-said "could not write" && ok "a WALK whose handoff cannot be armed is let through, and the user and Claude are told" \
+said "intent-lock: could not write" && ok "a WALK whose handoff cannot be armed is let through, and the user and Claude are told" \
   || bad "a WALK whose handoff cannot be armed is let through, and the user and Claude are told" "$OUT / $ERR"
+if [ -n "$NOJQ" ]; then nojq intent-guard.sh "$(exitp)"
+  said "intent-lock: jq is not installed" && printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 && ok "with no jq the exit is let through, and the user and Claude are told" \
+    || bad "with no jq the exit is let through, and the user and Claude are told" "$OUT"; fi
 
 # --- question-guard ------------------------------------------------------------------------------
 group "question-guard: refuses a box the user cannot answer well"
@@ -118,6 +136,12 @@ fresh
 run question-guard.sh "$(jq -nc '{tool_name:"Bash",tool_input:{command:"ls"}}')"
 [ -z "$OUT" ] && ok "negative control: another tool is left alone" || bad "negative control: another tool is left alone" "$OUT"
 run question-guard.sh "$(box "Which layout should the report use?" "Keep it (Recommended)" "$D4")"; expect_allow "a well-formed box is allowed"
+run question-guard.sh '{"tool_name":"AskUserQuestion","tool_input":{}}'
+said "question-guard: could not read any questions" && ok "a box it cannot read is let through, and the user and Claude are told" \
+  || bad "a box it cannot read is let through, and the user and Claude are told" "$OUT / $ERR"
+if [ -n "$NOJQ" ]; then nojq question-guard.sh '{"tool_name":"AskUserQuestion"}'
+  said "question-guard: jq or awk is missing" && printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 && ok "with no jq a box is let through, and the user and Claude are told" \
+    || bad "with no jq a box is let through, and the user and Claude are told" "$OUT"; fi
 run question-guard.sh "$(box "Which layout should the report use?" "Keep it" "$D4")"; expect_deny "a box with no recommended option is refused"
 run question-guard.sh "$(box "Which layout should the report use?" "Keep it (Recommended)" "$D4" | jq -c '.tool_input.questions[0].options[1].label="Change it (Recommended)"')"; expect_deny "a box with two recommended options is refused"
 run question-guard.sh "$(box "Which layout should the report use?" "Keep it (Recommended)" "This keeps the layout. It changes nothing. You see the same page.")"; expect_deny "a three-sentence description is refused"

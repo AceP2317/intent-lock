@@ -12,18 +12,26 @@
 #   - a question or description pointing at reply text ("the restatement above", "listed above",
 #     "in my reply"), because text written before a question box can be out of view behind it
 #
-# Fails open, loudly: no jq, no awk, or a payload it cannot parse lets the question through with a
-# warning on stderr, so an unchecked question never reads as a checked one.
+# Fails open, loudly: no jq, no awk, or a payload it cannot parse lets the question through, and the
+# user and Claude are both told, so an unchecked question never reads as a checked one. stderr alone
+# would not do it: Claude Code sends a hook's stderr to its debug log when the hook exits 0.
 #
 # Switch off for good:  touch ~/.claude/.question-off
 set -u
 
 input=$(cat 2>/dev/null) || input=''
 warn() { printf 'question-guard: %s\n' "$1" >&2; }
+# say: let the box through, telling the user's screen (systemMessage) and Claude (additionalContext).
+say() {
+  warn "$1"
+  jq -cn --arg m "question-guard: $1" \
+    '{systemMessage:$m, hookSpecificOutput:{hookEventName:"PreToolUse", additionalContext:($m + " Say this to the user in your next reply.")}}' 2>/dev/null
+}
 
 [ -f "$HOME/.claude/.question-off" ] && exit 0
 if ! command -v jq >/dev/null 2>&1 || ! command -v awk >/dev/null 2>&1; then
   warn "jq or awk is missing, so this question was NOT checked"
+  printf '%s\n' '{"systemMessage":"question-guard: jq or awk is missing, so this question was NOT checked","hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"question-guard: jq or awk is missing, so this question was NOT checked. Say this to the user in your next reply."}}'
   exit 0
 fi
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null | tr -d '\r')
@@ -43,7 +51,7 @@ fields=$(printf '%s' "$input" | jq -r '
       ("P\t" + $i + "\t" + ((.preview // "") | gsub("\\s"; ""))))
 ' 2>/dev/null)
 if [ -z "$fields" ]; then
-  warn "could not read any questions from the input, so this question was NOT checked"
+  say "could not read any questions from the input, so this question was NOT checked"
   exit 0
 fi
 
@@ -90,7 +98,7 @@ viol=$(printf '%s\n' "$fields" | awk -F'\t' '
       t = text; ns = gsub(/[.!?]"? /, " ", t); if (text ~ /[.!?]"?$/) ns++
       if (ns < 4) flag(qi, "an option description has " ns " sentence(s) -- give four: what this is, how it differs from the others, what you will see, and what you give up")
     }
-  }') || { warn "awk failed, so this question was NOT checked"; exit 0; }
+  }') || { say "awk failed, so this question was NOT checked"; exit 0; }
 
 [ -z "$viol" ] && exit 0
 
