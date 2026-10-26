@@ -279,7 +279,10 @@ claim_run() {  # claim_run <session> <wait seconds> <folder>; output in $T/<sess
     INTENT_LOCK_HANDOFF_NOWINDOW=1 INTENT_LOCK_HANDOFF_WAIT="$2" bash "$H/plan-handoff.sh" > "$T/$1.out" 2>&1
 }
 launcher_ready() { local i; for i in $(seq 1 100); do [ -f "$T/tmp/intent-lock-handoff-$1.ps1" ] && return 0; sleep 0.2; done; return 1; }
-stand_in() { pwsh.exe -NoProfile -Command "function claude { 'CLAUDE-RAN in ' + (Get-Location).Path }; . '$(cygpath -w "$T/tmp/intent-lock-handoff-$1.ps1")'" 2>&1 | tr -d '\r'; }
+# The approving session's variables are planted, as the new tab inherits them from this hook's process.
+stand_in() { pwsh.exe -NoProfile -Command "\$env:CLAUDE_CODE_SESSION_ID = 'planted'; \$env:CLAUDECODE = '1'; \$env:INTENT_LOCK_PROBE = 'kept'
+  function claude { 'CLAUDE-RAN in ' + (Get-Location).Path + ' IDENTITY=[' + \$env:CLAUDE_CODE_SESSION_ID + \$env:CLAUDECODE + '] PROBE=' + \$env:INTENT_LOCK_PROBE }
+  . '$(cygpath -w "$T/tmp/intent-lock-handoff-$1.ps1")'" 2>&1 | tr -d '\r'; }
 if command -v pwsh.exe >/dev/null 2>&1; then
   fresh; mkdir -p "$T/tmp" "$T/state/handoff" "$T/w1" "$T/w2" "$T/w3"
   printf '%s\n' '## Intent' '' '- DONE: the stand-in reports.' '<!-- INTENT-LOCK:WALK -->' > "$T/plan.md"
@@ -293,6 +296,9 @@ if command -v pwsh.exe >/dev/null 2>&1; then
   wait "$j1" "$j3"
   [[ $o1 == *"CLAUDE-RAN in $(cygpath -w "$T/w1")"* && $(cat "$T/c1.out") == *"HAS FIRED"* ]] \
     && ok "a window that claims the launch in time builds in the plan's folder" || bad "a window that claims the launch in time builds in the plan's folder" "$o1 / $(cat "$T/c1.out")"
+  [[ $o1 == *"IDENTITY=[] PROBE=kept"* ]] \
+    && ok "claude starts without the approving session's own variables; control: another variable stays" \
+    || bad "claude starts without the approving session's own variables; control: another variable stays" "$o1"
   [[ $(cat "$T/c2.out") == *"called off"* && $o2 == *"called off"* && $o2 != *CLAUDE-RAN* ]] \
     && ok "a window that starts after the wait ran out builds nothing" || bad "a window that starts after the wait ran out builds nothing" "$o2 / $(cat "$T/c2.out")"
   [[ $o3 == *FOLDER-FAILED* && $o3 != *CLAUDE-RAN* && $(cat "$T/c3.out") == *"could not enter"* ]] \

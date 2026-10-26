@@ -196,10 +196,15 @@ claim="$tmp\\intent-lock-handoff-$sid.claim"
 # wrong place. Then it CLAIMS the launch: this hook claims the same file when its wait runs out, and
 # creating it is all-or-nothing, so a window that starts late finds the handoff called off and builds
 # nothing. The claim runs only from the real launcher file, so a printed copy run by a test writes none.
+# The new tab inherits this hook's environment, which holds the approving session's own CLAUDE* variables:
+# its id, a child-session mark, its messaging socket and token. Each one Windows itself does not set is
+# removed before claude starts, so the new session is its own.
 body="try { Set-Location -LiteralPath $(psq "$wcwd") -ErrorAction Stop; \$hand = 'STARTED' } catch { \$hand = 'FOLDER-FAILED: ' + \$_.Exception.Message }
 if (Test-Path -LiteralPath $(psq "$launcher")) { try { \$f = [IO.File]::Open($(psq "$claim"), 'CreateNew', 'Write'); \$w = [IO.StreamWriter]::new(\$f); \$w.Write(\$hand); \$w.Close() } catch { Write-Host 'intent-lock: this handoff was called off, because the session that asked for it had stopped waiting.'; return } }
 if (\$hand -ne 'STARTED') { Write-Host ('intent-lock: ' + \$hand); return }
 Remove-Item -LiteralPath $(psq "$launcher") -Force -ErrorAction SilentlyContinue
+\$keep = @(foreach (\$s in 'User', 'Machine') { [Environment]::GetEnvironmentVariables(\$s).Keys })
+Get-ChildItem Env: | Where-Object { \$_.Name -match '^CLAUDE' -and \$keep -notcontains \$_.Name } | Remove-Item
 claude --permission-mode auto$eff_flag $(psq "$prompt")"
 
 shell=pwsh.exe; command -v pwsh.exe >/dev/null 2>&1 || shell=powershell.exe
