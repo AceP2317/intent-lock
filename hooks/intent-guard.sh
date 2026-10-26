@@ -4,7 +4,7 @@
 # Refuses to leave plan mode until the plan file is sealed:
 #   1. an `## Intent` section closed by <!-- INTENT-LOCK:CONFIRMED -->, or <!-- INTENT-LOCK:WAIVED -->
 #   2. exactly one of <!-- INTENT-LOCK:WATCH --> or <!-- INTENT-LOCK:WALK -->
-# A WALK plan arms plan-handoff.sh for this session, which opens a fresh auto-mode session on approval.
+# A WALK plan arms plan-handoff.sh for this exit, which opens a fresh auto-mode session on approval.
 # A WALK passes only when plan-handoff.sh --check-done can build a /goal from the plan's DONE line.
 #
 # Claude Code injects the plan's path (tool_input.planFilePath) and text (tool_input.plan) into this
@@ -50,6 +50,8 @@ if [ -f "$HOME/.claude/.intent-off" ]; then
 fi
 
 sid=$(field .session_id); sid="${sid//[^A-Za-z0-9._-]/_}"
+# This exit's own id, which the approval's input carries too, so the arm fires for this exit alone.
+tu=$(field .tool_use_id); tu="${tu//[^A-Za-z0-9_-]/_}"
 pf=$(field .tool_input.planFilePath)
 plan=''
 if [ -n "$pf" ] && { : < "$pf"; } 2>/dev/null; then
@@ -73,17 +75,14 @@ deny() {
   exit 0
 }
 
-# Marker on a line of its own, outside ``` / ~~~ fences and indented code blocks.
-has() {
-  printf '%s\n' "$plan" | awk -v want="$1" '
-    { sub(/\r$/, "") }
-    fence != "" { if ($0 ~ ("^[ \t]*" fence)) fence = ""; next }
-    /^[ \t]*```/ { fence = "```"; next }
-    /^[ \t]*~~~/ { fence = "~~~"; next }
-    /^(    |\t)/ { next }
-    $0 ~ ("^[ \t]*<!-- INTENT-LOCK:" want " -->[ \t]*$") { found = 1; exit }
-    END { exit(found ? 0 : 1) }'
-}
+# Marker on a line of its own, outside ``` / ~~~ fences and indented code blocks, read by lib/marker.sh,
+# the reader plan-handoff.sh reads the approved plan with.
+if ! . "$(dirname "${BASH_SOURCE[0]}")/lib/marker.sh" 2>/dev/null; then
+  say "lib/marker.sh is missing beside this hook, so this plan exit was NOT checked"
+  log "UNCHECKED no marker reader  $name"
+  exit 0
+fi
+has() { has_marker "$plan" "$1"; }
 
 # Words under an "## Intent" heading, up to the seal. A seal over an empty section is not a seal.
 intent_words() {
@@ -137,7 +136,7 @@ rec="$STATE/handoff/$sid"
 if [ "$how" = walk ]; then
   if [ -z "$sid" ]; then
     say "no session id in the hook input, so the walk-away handoff could not be armed; approval will continue in this window"
-  elif ! { mkdir -p "$STATE/handoff" && printf '%s\n' "${pf:--}" > "$rec"; } 2>/dev/null; then
+  elif ! { mkdir -p "$STATE/handoff" && printf '%s %s\n' "${tu:--}" "${pf:--}" > "$rec"; } 2>/dev/null; then
     say "could not write $rec, so the walk-away handoff is NOT armed; approval will continue in this window"
   fi
 else

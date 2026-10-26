@@ -11,7 +11,11 @@
 #
 # With nothing armed it prints nothing and approval behaves exactly as normal. The arm is consumed
 # before anything else, so a failure means a normal approval, never a handoff that fires next time.
-# Fails open: any problem tells Claude, in one line, to say so and carry on in this window.
+# It fires only for the exit that armed it, named by the id both hooks receive for one ExitPlanMode
+# call, and only while the plan as approved still says WALK: the approval dialog can edit the plan,
+# and a WALK changed there to WATCH is the user choosing to watch.
+# Fails open, loudly: any problem is printed for the user's screen and told to Claude, which says so
+# and carries on in this window.
 #
 # INTENT_LOCK_HANDOFF_DRYRUN=1 prints what would be launched instead of launching it.
 #
@@ -116,19 +120,26 @@ sid=${BASH_REMATCH[1]//[^A-Za-z0-9._-]/_}
 rec="$STATE/handoff/$sid"
 [ -f "$rec" ] || exit 0
 
+# say: one object, read by the user's screen (systemMessage) and by Claude (additionalContext). stderr
+# alone would not do: Claude Code sends a hook's stderr to its debug log when the hook exits 0.
 say() {
   printf 'plan-handoff: %s\n' "$1" >&2
   if command -v jq >/dev/null 2>&1; then
-    jq -cn --arg c "$1" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}'
+    jq -cn --arg c "plan-handoff: $1" '{systemMessage:$c, hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}'
   else
-    printf '%s\n' "$1"
+    printf '%s\n' '{"systemMessage":"plan-handoff: the walk-away handoff was armed, but jq is not installed, so no fresh session was opened.","hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"plan-handoff: the walk-away handoff was armed, but jq is not installed, so no fresh session was opened. Tell the user in one line and carry on in this window."}}'
   fi
   exit 0
 }
 
-recorded=$(head -n 1 "$rec" 2>/dev/null | tr -d '\r')
+rec_id=''; recorded=''
+read -r rec_id recorded < "$rec" 2>/dev/null
+rec_id=${rec_id//$'\r'/}; recorded=${recorded//$'\r'/}
 rm -f "$rec" 2>/dev/null
-command -v jq >/dev/null 2>&1 || say "The walk-away handoff was armed, but jq is not installed, so no fresh session was opened. Tell the user in one line and carry on in this window."
+command -v jq >/dev/null 2>&1 || say "jq is not installed"
+tu=$(printf '%s' "$input" | jq -r '.tool_use_id // empty' 2>/dev/null | tr -d '\r')
+[ -n "$tu" ] && [ "$rec_id" = "$tu" ] \
+  || say "The walk-away handoff was armed by an earlier plan exit, not the one just approved, so no fresh session was opened. Tell the user in one line and carry on in this window."
 
 plan_path=$(printf '%s' "$input" | jq -r '(.tool_response | objects | .filePath) // .tool_input.planFilePath // empty' 2>/dev/null | tr -d '\r')
 [ -n "$plan_path" ] || { [ "$recorded" != "-" ] && plan_path="$recorded"; }
@@ -137,6 +148,12 @@ if [ -z "${plan//[[:space:]]/}" ] && [ -n "$plan_path" ] && { : < "$plan_path"; 
   plan=$(cat "$plan_path")
 fi
 [ -n "${plan//[[:space:]]/}" ] || say "The walk-away handoff was armed, but the approved plan could not be read, so no fresh session was opened. Tell the user in one line and carry on in this window."
+. "$(dirname "${BASH_SOURCE[0]}")/lib/marker.sh" 2>/dev/null \
+  || say "The walk-away handoff was armed, but lib/marker.sh is missing beside this hook, so the approved plan's WATCH or WALK line could not be read and no fresh session was opened. Tell the user in one line and carry on in this window."
+has_marker "$plan" WATCH \
+  && say "The approved plan says WATCH, a change made in the approval dialog, so no fresh session was opened. Tell the user in one line and carry on in this window."
+has_marker "$plan" WALK \
+  || say "The approved plan no longer carries its WALK line, so no fresh session was opened. Tell the user in one line and carry on in this window."
 
 shown_path="$plan_path"; [ -n "$shown_path" ] || shown_path="(the plan approved in the previous session)"
 goal_for "$plan" "$shown_path"

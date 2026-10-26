@@ -76,7 +76,7 @@ INTENT='## Intent
 - **HOW** - reads the Monday export file, runs locally, reuses the existing export parser.
 - **DONE** - `npm test` prints PASS for the ranking fixtures, or stop after two sessions.'
 plan() { { printf '%s\n\n' "$INTENT"; printf '%s\n' "$@"; } > "$T/plan.md"; }
-exitp() { jq -nc --arg p "$T/plan.md" '{session_id:"g1",tool_name:"ExitPlanMode",tool_input:{planFilePath:$p}}'; }
+exitp() { jq -nc --arg p "$T/plan.md" '{session_id:"g1",tool_use_id:"gx1",tool_name:"ExitPlanMode",tool_input:{planFilePath:$p}}'; }
 fresh
 run intent-guard.sh "$(jq -nc '{session_id:"g1",tool_name:"Write",tool_input:{file_path:"x"}}')"
 [ -z "$OUT" ] && ok "negative control: another tool is left alone" || bad "negative control: another tool is left alone" "$OUT"
@@ -90,7 +90,8 @@ plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'; run intent-g
 [[ $ERR == *"ALLOW confirmed watch"* ]] && grep -q 'ALLOW confirmed watch' "$T/state/guard.log" && ok "the allow is logged and printed" || bad "the allow is logged and printed" "$ERR"
 [ ! -f "$T/state/handoff/g1" ] && ok "a WATCH plan arms no handoff" || bad "a WATCH plan arms no handoff" "record exists"
 plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; run intent-guard.sh "$(exitp)"; expect_allow "a sealed WALK plan is allowed"
-[ -f "$T/state/handoff/g1" ] && ok "a WALK plan arms the handoff for its session" || bad "a WALK plan arms the handoff for its session" "no record"
+[[ $(cat "$T/state/handoff/g1" 2>/dev/null) == "gx1 "*/plan.md ]] && ok "a WALK plan arms the handoff for its session, naming this exit and its plan" \
+  || bad "a WALK plan arms the handoff for its session, naming this exit and its plan" "record: $(cat "$T/state/handoff/g1" 2>&1)"
 PROSE="${INTENT/- \*\*DONE\*\* -/- Done when}"
 { printf '%s\n\n' "$PROSE"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; } > "$T/plan.md"; rm -f "$T/state/handoff/g1"
 run intent-guard.sh "$(exitp)"; expect_deny "a WALK plan whose DONE the handoff cannot read is refused"
@@ -100,7 +101,7 @@ run intent-guard.sh "$(exitp)"; expect_deny "a WALK plan whose DONE the handoff 
 run intent-guard.sh "$(exitp)"; expect_allow "its twin with a plain '- DONE:' label is allowed"
 { printf '%s\n\n' "$PROSE"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'; } > "$T/plan.md"
 run intent-guard.sh "$(exitp)"; expect_allow "an unreadable DONE does not block a WATCH plan"
-mkdir -p "$T/stand/hooks"; cp "$H/intent-guard.sh" "$T/stand/hooks/"; printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stand/hooks/plan-handoff.sh"
+mkdir -p "$T/stand/hooks"; cp "$H/intent-guard.sh" "$T/stand/hooks/"; cp -r "$H/lib" "$T/stand/hooks/"; printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stand/hooks/plan-handoff.sh"
 { printf '%s\n\n' "$INTENT"; printf '%s\n' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; } > "$T/plan.md"
 H="$T/stand/hooks" run intent-guard.sh "$(exitp)"; expect_deny "a stand-in handoff that exits 0 without checking does not pass a WALK"
 printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WATCH -->\n' > "$T/plan.md"; run intent-guard.sh "$(exitp)"; expect_allow "a waived plan is allowed"
@@ -156,11 +157,13 @@ run question-guard.sh "$(box "Should the alert fire when cover stays above 3 day
 
 # --- plan-handoff --------------------------------------------------------------------------------
 group "plan-handoff: opens a fresh auto-mode session only when armed"
-approve() { jq -nc --arg p "$T/plan.md" --arg c "$T" '{session_id:"h1",cwd:$c,tool_name:"ExitPlanMode",tool_input:{planFilePath:$p},tool_response:{filePath:$p}}'; }
+approve() { jq -nc --arg p "$T/plan.md" --arg c "$T" '{session_id:"h1",tool_use_id:"tu1",cwd:$c,tool_name:"ExitPlanMode",tool_input:{planFilePath:$p},tool_response:{filePath:$p}}'; }
+# armh [exit id]: the arm intent-guard.sh writes, for the exit approve() names unless another is given.
+armh() { mkdir -p "$T/state/handoff"; printf '%s %s\n' "${1:-tu1}" "$T/plan.md" > "$T/state/handoff/h1"; }
 fresh; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
 run plan-handoff.sh "$(approve)"
 [ -z "$OUT$ERR" ] && ok "negative control: not armed, so nothing happens" || bad "negative control: not armed, so nothing happens" "$OUT / $ERR"
-mkdir -p "$T/state/handoff"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+armh
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $ERR == *"/goal Carry out the approved plan"* && $ERR == *'prints PASS for the ranking fixtures'* && $ERR == *"--permission-mode auto"* ]] \
   && ok "armed on Windows: the launcher runs /goal built from the DONE slot in auto mode" || bad "armed on Windows: the launcher runs /goal built from the DONE slot in auto mode" "$ERR"
@@ -168,39 +171,59 @@ PLATFORM=windows run plan-handoff.sh "$(approve)"
 [ ! -f "$T/state/handoff/h1" ] && ok "the arm is consumed" || bad "the arm is consumed" "record still there"
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [ -z "$OUT$ERR" ] && ok "a consumed arm does not fire again" || bad "a consumed arm does not fire again" "$OUT / $ERR"
-printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+armh
 PLATFORM=unix run plan-handoff.sh "$(approve)"
 [[ $OUT == *"claude --permission-mode auto '/goal Carry out"* && $OUT == *"Do not start work on this plan here"* ]] \
   && ok "armed on Mac or Linux: the exact command is handed to Claude to show" || bad "armed on Mac or Linux: the exact command is handed to Claude to show" "$OUT"
 # The approving window's effort level rides along; the run just above carried none, which is the control.
 [[ $OUT != *"--effort"* ]] && ok "control: an approval with no effort level passes no --effort" || bad "control: an approval with no effort level passes no --effort" "$OUT"
 approve_at() { approve | jq -c --arg e "$1" '. + {effort:{level:$e}}'; }
-printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+armh
 PLATFORM=windows run plan-handoff.sh "$(approve_at xhigh)"
 [[ $ERR == *"claude --permission-mode auto --effort xhigh '/goal Carry out"* ]] \
   && ok "armed at xhigh: the new window starts at xhigh" || bad "armed at xhigh: the new window starts at xhigh" "$ERR"
-printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+armh
 PLATFORM=unix run plan-handoff.sh "$(approve_at "max'; rm -rf ~; '")"
 [[ $OUT == *"claude --permission-mode auto '/goal Carry out"* && $OUT != *"rm -rf"* ]] \
   && ok "a level the CLI does not take is dropped, never pasted into the command" || bad "a level the CLI does not take is dropped, never pasted into the command" "$OUT"
-printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WALK -->\n' > "$T/plan.md"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WALK -->\n' > "$T/plan.md"; armh
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $OUT == *"goal NOT set"* && $ERR != *"/goal Carry"* ]] && ok "a plan with no DONE slot opens without a goal, and says so" || bad "a plan with no DONE slot opens without a goal, and says so" "$OUT / $ERR"
 # A path holding a space: Start-Process joins its argument list with plain spaces, so an unquoted path
 # arrives in two pieces. The temp folder carries the space here, as it does for a Windows user whose
 # name has one. The control runs the same check against a copy with the quoting taken out.
 fresh; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
-mkdir -p "$T/state/handoff" "$T/te mp" "$T/old/hooks"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+mkdir -p "$T/state/handoff" "$T/te mp" "$T/old/hooks"; armh
 TEMP="$T/te mp" PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $ERR == *"DRYRUN windows fallback:"*"'-File','\""*"te mp"*".ps1\"'"* ]] \
   && ok "a launcher path holding a space reaches Start-Process inside its own double quotes" || bad "a launcher path holding a space reaches Start-Process inside its own double quotes" "$ERR"
 [[ $ERR == *"DRYRUN windows terminal: wt.exe "* && $ERR != *"wt.exe -d"* ]] \
   && ok "Windows Terminal is not handed the folder, so no folder name can split its command line" || bad "Windows Terminal is not handed the folder, so no folder name can split its command line" "$ERR"
-sed 's/\$(psqq "\$launcher")/$(psq "$launcher")/' "$H/plan-handoff.sh" > "$T/old/hooks/plan-handoff.sh"
-printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+sed 's/\$(psqq "\$launcher")/$(psq "$launcher")/' "$H/plan-handoff.sh" > "$T/old/hooks/plan-handoff.sh"; cp -r "$H/lib" "$T/old/hooks/"
+armh
 TEMP="$T/te mp" PLATFORM=windows H="$T/old/hooks" run plan-handoff.sh "$(approve)"
 [[ $ERR == *"DRYRUN windows fallback:"*"te mp"* && $ERR != *"'-File','\""* ]] \
   && ok "control: with the quoting taken out, the same check sees the path go in bare" || bad "control: with the quoting taken out, the same check sees the path go in bare" "$ERR"
+# It fires for the exit that armed it alone, and only while the plan as approved says WALK, because the
+# approval dialog can edit the plan. Each drop reaches the screen and Claude; the control is every armed
+# run above, which fires.
+fresh; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
+armh tu0; PLATFORM=windows run plan-handoff.sh "$(approve)"
+said "plan-handoff: The walk-away handoff was armed by an earlier plan exit" && [[ $ERR != *DRYRUN* ]] \
+  && ok "an arm an earlier exit left opens nothing, and the user and Claude are told" || bad "an arm an earlier exit left opens nothing, and the user and Claude are told" "$OUT / $ERR"
+armh; PLATFORM=windows run plan-handoff.sh "$(approve | jq -c --arg t "$(sed 's/:WALK/:WATCH/' "$T/plan.md")" '.tool_response.plan = $t')"
+said "plan-handoff: The approved plan says WATCH" && [[ $ERR != *DRYRUN* ]] \
+  && ok "a WALK changed to WATCH in the approval dialog opens nothing" || bad "a WALK changed to WATCH in the approval dialog opens nothing" "$OUT / $ERR"
+armh; PLATFORM=windows run plan-handoff.sh "$(approve | jq -c --arg t "$INTENT" '.tool_response.plan = $t')"
+said "plan-handoff: The approved plan no longer carries its WALK line" && [[ $ERR != *DRYRUN* ]] \
+  && ok "a WALK line deleted in the approval dialog opens nothing" || bad "a WALK line deleted in the approval dialog opens nothing" "$OUT / $ERR"
+mkdir -p "$T/bare"; cp "$H/plan-handoff.sh" "$H/intent-guard.sh" "$T/bare/"
+armh; PLATFORM=windows H="$T/bare" run plan-handoff.sh "$(approve)"
+said "plan-handoff: The walk-away handoff was armed, but lib/marker.sh is missing" && [[ $ERR != *DRYRUN* ]] \
+  && ok "a handoff with no marker reader beside it opens nothing, and says so" || bad "a handoff with no marker reader beside it opens nothing, and says so" "$OUT / $ERR"
+H="$T/bare" run intent-guard.sh "$(exitp)"
+said "intent-lock: lib/marker.sh is missing" && ok "a gate with no marker reader beside it lets the exit through, and says so" \
+  || bad "a gate with no marker reader beside it lets the exit through, and says so" "$OUT / $ERR"
 
 group "plan-handoff --check-done: every way a plan writes its DONE line"
 check() {  # check <name> <DONE line> <want: set|unset> [text that must be in the goal]
@@ -223,14 +246,14 @@ check "negative control: no DONE line at all" '- **HOW** - runs locally.' unset
 said=$(printf '%s\n' '- DONE: npm test prints PASS,' '  or stop after two sessions.' '- NOT: no email.' | bash "$H/plan-handoff.sh" --check-done /p.md 2>&1)
 [[ $said == *"goal set from DONE"* ]] && ok "a continued DONE line still builds a goal" || bad "a continued DONE line still builds a goal" "$said"
 plan_txt=$(printf '%s\n' '- DONE: npm test prints PASS,' '  or stop after two sessions.' '- NOT: no email.')
-fresh; printf '%s\n' "$plan_txt" > "$T/plan.md"; mkdir -p "$T/state/handoff"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+fresh; printf '%s\n' "$plan_txt" '<!-- INTENT-LOCK:WALK -->' > "$T/plan.md"; armh
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $ERR == *"prints PASS, or stop after two sessions."* && $ERR != *"no email"* ]] \
   && ok "the goal carries the continuation and stops at the next plain label" || bad "the goal carries the continuation and stops at the next plain label" "$ERR"
 check "bold label in title case"      '- **Done:** npm test prints PASS'             set
 check "plain label in title case before a colon" '- Done: npm test prints PASS'      set
 # goal_of <plan lines...>: the Windows dry run for that plan, in $ERR.
-goal_of() { fresh; printf '%s\n' "$@" > "$T/plan.md"; mkdir -p "$T/state/handoff"; printf '%s\n' "$T/plan.md" > "$T/state/handoff/h1"
+goal_of() { fresh; printf '%s\n' "$@" '<!-- INTENT-LOCK:WALK -->' > "$T/plan.md"; armh
             PLATFORM=windows run plan-handoff.sh "$(approve)"; }
 goal_of '## Intent' '' '**DONE.** The transcript must show, in order:' '' '- LEADIN_ONE green.' '- LEADIN_TWO matches.' '' '## Context' 'LEAK_LEADIN'
 [[ $ERR == *LEADIN_ONE*LEADIN_TWO* && $ERR != *LEAK_LEADIN* ]] \
@@ -251,7 +274,7 @@ group "plan-handoff: the new window claims the launch, and a late one builds not
 # The real Windows path with no window opened, in this test's own temp folder; a stand-in claude.
 claim_run() {  # claim_run <session> <wait seconds> <folder>; output in $T/<session>.out
   jq -nc --arg p "$T/plan.md" --arg c "$(cygpath -w "$3")" --arg s "$1" \
-     '{session_id:$s,cwd:$c,tool_name:"ExitPlanMode",tool_input:{planFilePath:$p},tool_response:{filePath:$p}}' \
+     '{session_id:$s,tool_use_id:("tu-" + $s),cwd:$c,tool_name:"ExitPlanMode",tool_input:{planFilePath:$p},tool_response:{filePath:$p}}' \
   | HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="$KIT" INTENT_LOCK_PLATFORM=windows TEMP="$T/tmp" \
     INTENT_LOCK_HANDOFF_NOWINDOW=1 INTENT_LOCK_HANDOFF_WAIT="$2" bash "$H/plan-handoff.sh" > "$T/$1.out" 2>&1
 }
@@ -259,8 +282,8 @@ launcher_ready() { local i; for i in $(seq 1 100); do [ -f "$T/tmp/intent-lock-h
 stand_in() { pwsh.exe -NoProfile -Command "function claude { 'CLAUDE-RAN in ' + (Get-Location).Path }; . '$(cygpath -w "$T/tmp/intent-lock-handoff-$1.ps1")'" 2>&1 | tr -d '\r'; }
 if command -v pwsh.exe >/dev/null 2>&1; then
   fresh; mkdir -p "$T/tmp" "$T/state/handoff" "$T/w1" "$T/w2" "$T/w3"
-  printf '%s\n' '## Intent' '' '- DONE: the stand-in reports.' > "$T/plan.md"
-  for s in c1 c2 c3; do printf '%s\n' "$T/plan.md" > "$T/state/handoff/$s"; done
+  printf '%s\n' '## Intent' '' '- DONE: the stand-in reports.' '<!-- INTENT-LOCK:WALK -->' > "$T/plan.md"
+  for s in c1 c2 c3; do printf 'tu-%s %s\n' "$s" "$T/plan.md" > "$T/state/handoff/$s"; done
   claim_run c1 30 "$T/w1" & j1=$!
   claim_run c3 30 "$T/w3" & j3=$!
   claim_run c2 2 "$T/w2"
