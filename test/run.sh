@@ -97,8 +97,15 @@ run intent-guard.sh "$(jq -nc --arg p "$INTENT
 <!-- INTENT-LOCK:CONFIRMED -->
 <!-- INTENT-LOCK:WATCH -->" '{session_id:"g2",tool_name:"ExitPlanMode",tool_input:{plan:$p}}')"
 expect_allow "plan text given inline with no file path is read"
+# A fail-open exit is told to the user and to Claude in one object: stderr from a hook that exits 0
+# reaches only Claude Code's debug log, so a warning written there alone is a silent one.
+said() { ! denied && [[ $OUT == *"\"systemMessage\":\"intent-lock: $1"* && $OUT == *"\"additionalContext\":\"intent-lock: $1"* ]]; }
 run intent-guard.sh '{"session_id":"g3","tool_name":"ExitPlanMode","tool_input":{}}'
-[[ -z $OUT && $ERR == *"NOT checked"* ]] && ok "no readable plan fails open, and says so" || bad "no readable plan fails open, and says so" "$OUT / $ERR"
+said "could not read the plan" && [[ $ERR == *"NOT checked"* ]] && ok "no readable plan fails open, and tells the user and Claude" \
+  || bad "no readable plan fails open, and tells the user and Claude" "$OUT / $ERR"
+fresh; : > "$T/state/handoff"; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; run intent-guard.sh "$(exitp)"
+said "could not write" && ok "a WALK whose handoff cannot be armed is let through, and the user and Claude are told" \
+  || bad "a WALK whose handoff cannot be armed is let through, and the user and Claude are told" "$OUT / $ERR"
 
 # --- question-guard ------------------------------------------------------------------------------
 group "question-guard: refuses a box the user cannot answer well"

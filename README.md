@@ -64,7 +64,8 @@ rules apply outside plan mode too.
 - A single plan can skip the gate with `<!-- INTENT-LOCK:WAIVED -->` in place of the seal.
 
 Every hook fails open: when it cannot read its input it lets the action through and prints a
-warning, so a check that could not run never looks like one that passed.
+warning, so a check that could not run never looks like one that passed. The exit gate puts that
+warning on your screen and in front of Claude, since a hook's stderr alone reaches only the debug log.
 
 ## Tests
 

@@ -11,8 +11,11 @@
 # hook's input. Markers count only on a line of their own, outside fenced or indented code, so a plan
 # that quotes the marker while explaining it is not sealed by accident.
 #
-# Fails open, loudly: when it cannot read the plan or lacks jq, the exit is allowed and a warning goes
-# to stderr and the log, so an unchecked exit never reads as a checked one.
+# Fails open, loudly: when it cannot read the plan, lacks jq, or cannot arm a walk-away, the exit is
+# allowed and the user and Claude are both told, so an unchecked exit never reads as a checked one.
+# One printed object does both: systemMessage reaches the screen, and additionalContext reaches Claude
+# while the exit still goes ahead. stderr alone is not enough, because Claude Code sends a hook's stderr
+# to its debug log when the hook exits 0.
 #
 # Verdicts are logged to $INTENT_LOCK_STATE/guard.log (default ~/.claude/intent-lock-state/).
 # Switch off for good:  touch ~/.claude/.intent-off
@@ -24,9 +27,16 @@ input=$(cat 2>/dev/null) || input=''
 warn() { printf 'intent-lock: %s\n' "$1" >&2; }
 log()  { mkdir -p "$STATE" 2>/dev/null
          printf '%s  %s\n' "$(date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null)" "$1" >> "$STATE/guard.log" 2>/dev/null; }
+# say: a warning for the user's screen and for Claude, printed once, as the exit goes ahead.
+say() {
+  warn "$1"
+  jq -cn --arg m "intent-lock: $1" \
+    '{systemMessage:$m, hookSpecificOutput:{hookEventName:"PreToolUse", additionalContext:($m + " Say this to the user in your next reply.")}}' 2>/dev/null
+}
 
 if ! command -v jq >/dev/null 2>&1; then
   warn "jq is not installed, so this plan exit was NOT checked"
+  printf '%s\n' '{"systemMessage":"intent-lock: jq is not installed, so this plan exit was NOT checked","hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"intent-lock: jq is not installed, so this plan exit was NOT checked, and no walk-away session will open from it. Say this to the user in your next reply."}}'
   exit 0
 fi
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null | tr -d '\r'; }
@@ -50,7 +60,7 @@ fi
 name="${pf##*[/\\]}"; [ -n "$name" ] || name="the plan"
 
 if [ -z "${plan//[[:space:]]/}" ]; then
-  warn "could not read the plan (no readable planFilePath and no plan text), so this exit was NOT checked"
+  say "could not read the plan (no readable planFilePath and no plan text), so this exit was NOT checked"
   log "UNCHECKED no plan text  $name"
   exit 0
 fi
@@ -126,9 +136,9 @@ fi
 rec="$STATE/handoff/$sid"
 if [ "$how" = walk ]; then
   if [ -z "$sid" ]; then
-    warn "no session id in the hook input, so the walk-away handoff could not be armed; approval will continue in this window"
+    say "no session id in the hook input, so the walk-away handoff could not be armed; approval will continue in this window"
   elif ! { mkdir -p "$STATE/handoff" && printf '%s\n' "${pf:--}" > "$rec"; } 2>/dev/null; then
-    warn "could not write $rec, so the walk-away handoff is NOT armed; approval will continue in this window"
+    say "could not write $rec, so the walk-away handoff is NOT armed; approval will continue in this window"
   fi
 else
   [ -n "$sid" ] && rm -f "$rec" 2>/dev/null
