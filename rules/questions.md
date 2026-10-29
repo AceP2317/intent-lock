@@ -24,4 +24,10 @@ breaches; the judgement half is yours.
   only, so every option's explanation is dropped. Draw a comparison grid in the reply instead.
 - **Never point at reply text.** No "the restatement above", "listed above" or "in my reply". Text
   written before a question box can be out of view while the box is open, so put what the question
-  is about inside the question itself.
+  is about inside the question itself. A pointer at another question or option in the same box names
+  it by its label. The guard lets through four shapes that point at nothing out of view:
+  - a later reply, with will earlier in the sentence: "you will see the hash in my reply"
+  - "above" as plain English: "the town from above", "traffic that rises above normal"
+  - an option sentence opening "Unlike", which compares the options in the box
+  - "the table above" for the comparison grid; keep that table short and directly before the box,
+    so it stays in view while the box is open

@@ -56,21 +56,35 @@ if [ -z "$fields" ]; then
 fi
 
 viol=$(printf '%s\n' "$fields" | awk -F'\t' '
-  function unseen_ptr(low,   s, at, rest, hit) {
+  function unseen_ptr(low,   s, at, rest, hit, base, sent) {
     if (match(low, /(^|[^a-z])(see|as|in|listed|shown|stated|written|described|restated|outlined|summarised|summarized|explained|mentioned|noted|drawn|given|quoted|laid out|set out) above([^a-z]|$)/))
       return substr(low, RSTART, RLENGTH)
     if (match(low, /(^|[^a-z])(above|earlier) in (my|this|the) (reply|message|answer|response)/))
       return substr(low, RSTART, RLENGTH)
-    if (match(low, /(^|[^a-z])(in|from) my (reply|message|answer|response)([^a-z]|$)/))
-      return substr(low, RSTART, RLENGTH)
-    s = low
+    s = low; base = 0
+    while (match(s, /(^|[^a-z])(in|from) my (reply|message|answer|response)([^a-z]|$)/)) {
+      hit = substr(s, RSTART, RLENGTH)
+      at = RSTART + RLENGTH - 1
+      sent = substr(low, 1, base + RSTART)
+      sub(/.*[.!?] /, "", sent)
+      if (hit ~ /(^|[^a-z])from my/ || sent !~ /(^|[^a-z])(will|ll)[^a-z]/) return hit
+      base += at - 1
+      s = substr(s, at)
+    }
+    s = low; base = 0
     while (match(s, /(^|[^a-z])(the|this|that|these|those|my) ([a-z-]+ )?([a-z-]+ )?([a-z-]+ )?above([^a-z]|$)/)) {
       hit = substr(s, RSTART, RLENGTH)
       at = RSTART + RLENGTH - 1
       rest = substr(s, at)
+      sent = substr(low, 1, base + RSTART)
+      sub(/.*[.!?] /, "", sent)
       if (rest !~ /^ (the|a|an|it|them|its|their|which|all|every|average|[0-9$])/ &&
           hit !~ /(option|options|choice|choices|question|questions|route|routes|one|two|three|four) above/ &&
+          hit !~ /(^|[^a-z])(table|tables|grid|grids|panel|panels|comparison) above/ &&
+          hit !~ /(^|[^a-z])(from|high|far|rise|rises|rose|rising|risen) above/ &&
+          sent !~ /^[^a-z]*unlike / &&
           hit !~ /(^|[^a-z])the above/) return hit
+      base += at - 1
       s = substr(s, at)
     }
     return ""
@@ -92,7 +106,7 @@ viol=$(printf '%s\n' "$fields" | awk -F'\t' '
     }
     if (kind == "Q" || kind == "D") {
       ptr = unseen_ptr(low); gsub(/^[^a-z]+|[^a-z]+$/, "", ptr)
-      if (ptr != "") flag(qi, "the " (kind == "Q" ? "question" : "option description") " points at reply text with \"" ptr "\" -- text written before a question box can be out of view behind it, so put what it points at inside the question itself")
+      if (ptr != "") flag(qi, "the " (kind == "Q" ? "question" : "option description") " points at reply text with \"" ptr "\" -- text written before a question box can be out of view behind it, so put what it points at inside the question itself; if it means another question or option in this box, name that one by its label")
     }
     if (kind == "D") {
       t = text; ns = gsub(/[.!?]"? /, " ", t); if (text ~ /[.!?]"?$/) ns++
