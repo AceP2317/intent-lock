@@ -15,11 +15,16 @@ H="$KIT/hooks"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is not installed, so nothing was tested"; exit 2; }
 
-pass=0; fail=0; group_fail=0
+pass=0; fail=0; skipped=0; group_fail=0; group_skip=0
 ok()  { pass=$((pass+1)); printf '  PASS  %s\n' "$1"; }
 bad() { fail=$((fail+1)); group_fail=$((group_fail+1)); printf '  FAIL  %s\n        %s\n' "$1" "${2:0:400}"; }
-group() { [ -n "${G:-}" ] && summary; G=$1; group_fail=0; printf '\n== %s ==\n' "$1"; }
-summary() { if [ "$group_fail" = 0 ]; then printf 'PASS %s\n' "$G"; else printf 'FAIL %s (%s failed)\n' "$G" "$group_fail"; fi; }
+# A check that cannot run here is counted on its own, so a missing tool never reads as a pass.
+skip() { skipped=$((skipped+1)); group_skip=$((group_skip+1)); printf '  SKIP  %s\n' "$1"; }
+group() { [ -n "${G:-}" ] && summary; G=$1; group_fail=0; group_skip=0; printf '\n== %s ==\n' "$1"; }
+summary() {
+  local s=''; [ "$group_skip" = 0 ] || s="$group_skip skipped"
+  if [ "$group_fail" = 0 ]; then printf 'PASS %s%s\n' "$G" "${s:+ ($s)}"; else printf 'FAIL %s (%s failed%s)\n' "$G" "$group_fail" "${s:+, $s}"; fi
+}
 
 OUT=''; ERR=''
 fresh() { rm -rf "$T/home" "$T/state"; mkdir -p "$T/home/.claude" "$T/state"; }
@@ -56,7 +61,7 @@ run intent-inject.sh '{"session_id":"s4","permission_mode":"plan","prompt":"x"}'
 fresh; mkdir -p "$T/norules/skill/intent-lock"; cp "$KIT/skill/intent-lock/SKILL.md" "$T/norules/skill/intent-lock/"
 KITDIR="$T/norules" run intent-inject.sh '{"session_id":"s5","permission_mode":"plan","prompt":"x"}'
 [[ $OUT == *"## Six slots"* && $OUT == *"question rules not found"* ]] && ok "missing question rules are told to Claude with the method" || bad "missing question rules are told to Claude with the method" "$OUT"
-if PATH=/usr/bin command -v jq >/dev/null 2>&1; then printf '  SKIP  the jq-missing arms: /usr/bin holds a jq here\n'
+if PATH=/usr/bin command -v jq >/dev/null 2>&1; then skip "the jq-missing arms: /usr/bin holds a jq here"
 else
   OUT=$(printf '%s' '{"session_id":"s6","permission_mode":"plan","prompt":"x"}' | HOME="$T/home" INTENT_LOCK_KIT="$KIT" PATH=/usr/bin "$BASH" "$H/intent-inject.sh" 2>/dev/null)
   [[ $OUT == *'"systemMessage":"intent-lock: jq is not installed'* ]] && printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 \
@@ -115,7 +120,7 @@ expect_allow "plan text given inline with no file path is read"
 said() { ! denied && [[ $OUT == *"\"systemMessage\":\"$1"* && $OUT == *"\"additionalContext\":\"$1"* ]]; }
 # nojq <hook> <json>: the hook run with only /usr/bin on PATH, where this machine keeps no jq.
 nojq() { OUT=$(printf '%s' "$2" | HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="$KIT" PATH=/usr/bin "$BASH" "$H/$1" 2>/dev/null); }
-NOJQ=1; PATH=/usr/bin command -v jq >/dev/null 2>&1 && { NOJQ=''; printf '  SKIP  the jq-missing arms: /usr/bin holds a jq here\n'; }
+NOJQ=1; PATH=/usr/bin command -v jq >/dev/null 2>&1 && { NOJQ=''; skip "the jq-missing arms: /usr/bin holds a jq here"; }
 run intent-guard.sh '{"session_id":"g3","tool_name":"ExitPlanMode","tool_input":{}}'
 said "intent-lock: could not read the plan" && [[ $ERR == *"NOT checked"* ]] && ok "no readable plan fails open, and tells the user and Claude" \
   || bad "no readable plan fails open, and tells the user and Claude" "$OUT / $ERR"
@@ -304,9 +309,9 @@ if command -v pwsh.exe >/dev/null 2>&1; then
   [[ $o3 == *FOLDER-FAILED* && $o3 != *CLAUDE-RAN* && $(cat "$T/c3.out") == *"could not enter"* ]] \
     && ok "a window whose folder is gone stops instead of building elsewhere" || bad "a window whose folder is gone stops instead of building elsewhere" "$o3 / $(cat "$T/c3.out")"
 else
-  ok "skipped: no pwsh.exe here, so the claim cannot be run"
+  skip "the four window-claim arms: no pwsh.exe here, so the claim cannot be run"
 fi
 
 summary
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+printf '\n%s passed, %s failed, %s skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ]
