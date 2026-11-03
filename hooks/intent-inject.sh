@@ -2,8 +2,9 @@
 # intent-inject.sh -- UserPromptSubmit hook, part of the intent-lock kit (MIT, Ian Provencher).
 #
 # When a prompt is submitted in plan mode, prints the intent-lock method and the question rules so
-# Claude reads them before planning. The full text is sent once per session; later plan-mode turns
-# get a one-paragraph reminder. Plain stdout from this event is added to Claude's context.
+# Claude reads them before planning. The full text is sent once per session, and again on the first
+# plan-mode turn after a summary; other plan-mode turns get a one-paragraph reminder. Plain stdout
+# from this event is added to Claude's context.
 #
 # Fails open: if it cannot read its input or its files, the prompt goes through untouched and a
 # warning goes to stderr (and, where it can, into Claude's context), so a missing method never
@@ -30,6 +31,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 mode=$(printf '%s' "$input" | jq -r '.permission_mode // empty' 2>/dev/null | tr -d '\r')
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null | tr -d '\r')
+tp=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null | tr -d '\r')
 [ "$mode" = "plan" ] || exit 0
 
 if [ -f "$HOME/.claude/.intent-off" ]; then
@@ -54,11 +56,23 @@ if [ -n "$sid" ]; then
   mkdir "$STATE/sessions/$safe" 2>/dev/null || full=0
 fi
 
+# A summary takes the method away: text a hook added earlier is summarised with the rest. A full send
+# records the transcript's size; a later plan turn checks only the bytes added since for a summary.
+if [ "$full" = 0 ] && [ -n "$tp" ] && [ -f "$tp" ]; then
+  if [ -f "$STATE/sessions/$safe/at" ]; then
+    read -r at < "$STATE/sessions/$safe/at"
+    tail -c "+$(( ${at:-0} + 1 ))" "$tp" 2>/dev/null | grep -qF '"subtype":"compact_boundary"' && full=1
+  else
+    wc -c < "$tp" 2>/dev/null | tr -d ' ' > "$STATE/sessions/$safe/at"
+  fi
+fi
+
 if [ "$full" = 0 ]; then
   printf '%s\n' "intent-lock is active; its method loaded earlier this session. Ask whatever would most change the build, keep the ledger, put the restatement inside the question box, then seal the plan with <!-- INTENT-LOCK:CONFIRMED --> and a WATCH or WALK line."
   exit 0
 fi
 
+[ -n "$sid" ] && [ -n "$tp" ] && [ -f "$tp" ] && wc -c < "$tp" 2>/dev/null | tr -d ' ' > "$STATE/sessions/$safe/at"
 printf '%s\n\n' "Plan mode: apply intent-lock before committing to a build direction. Do not plan on assumed intent."
 printf '%s\n' "$body"
 if { : < "$rules"; } 2>/dev/null; then

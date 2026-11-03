@@ -38,7 +38,7 @@ expect_deny()  { if denied; then ok "$1"; else bad "$1" "expected DENY, got: $OU
 expect_allow() { if denied; then bad "$1" "expected ALLOW, got: $OUT"; else ok "$1"; fi; }
 
 # --- intent-inject -------------------------------------------------------------------------------
-group "intent-inject: loads the method in plan mode, once per session"
+group "intent-inject: loads the method in plan mode, once per session and after a summary"
 fresh
 run intent-inject.sh '{"session_id":"s1","permission_mode":"default","prompt":"hi"}'
 [ -z "$OUT" ] && ok "negative control: silent outside plan mode" || bad "negative control: silent outside plan mode" "$OUT"
@@ -51,6 +51,15 @@ run intent-inject.sh '{"session_id":"s1","permission_mode":"plan","prompt":"more
 [[ $OUT == *"loaded earlier this session"* && ${#OUT} -lt 500 ]] && ok "second prompt in the same session gets the short reminder" || bad "second prompt in the same session gets the short reminder" "$OUT"
 run intent-inject.sh '{"session_id":"s2","permission_mode":"plan","prompt":"other"}'
 [[ $OUT == *"## Six slots"* ]] && ok "a different session gets the full method again" || bad "a different session gets the full method again" "$OUT"
+# A summary takes the method away, so the first plan turn after one gets it again, and only that turn.
+TR="$T/s7.jsonl"; printf '{"type":"user"}\n' > "$TR"
+J='{"session_id":"s7","permission_mode":"plan","prompt":"x","transcript_path":"'"$TR"'"}'
+run intent-inject.sh "$J"; printf '{"type":"assistant"}\n' >> "$TR"; run intent-inject.sh "$J"
+[[ $OUT == *"loaded earlier this session"* ]] && ok "negative control: with no summary, a later turn gets the reminder" || bad "negative control: with no summary, a later turn gets the reminder" "$OUT"
+printf '{"type":"system","subtype":"compact_boundary"}\n' >> "$TR"; run intent-inject.sh "$J"
+[[ $OUT == *"## Six slots"* ]] && ok "the first plan turn after a summary gets the full method again" || bad "the first plan turn after a summary gets the full method again" "$OUT"
+run intent-inject.sh "$J"
+[[ $OUT == *"loaded earlier this session"* ]] && ok "the turn after that is back to the reminder" || bad "the turn after that is back to the reminder" "$OUT"
 fresh; mkdir -p "$T/emptykit"
 KITDIR="$T/emptykit" run intent-inject.sh '{"session_id":"s3","permission_mode":"plan","prompt":"x"}'
 [[ $OUT == *"NOT LOADED"* && $ERR == *"NOT LOADED"* ]] && ok "a missing skill is announced, never silent" || bad "a missing skill is announced, never silent" "$OUT / $ERR"
