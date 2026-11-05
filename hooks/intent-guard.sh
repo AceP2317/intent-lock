@@ -126,7 +126,7 @@ if [ "$how" = walk ]; then
   # The advice follows the handoff's reason: a plan refused for its length has a DONE line already.
   case "$said" in
     *'4,000'*) fix="Shorten the DONE slot until the condition fits under 4,000 characters" ;;
-    *) fix="Write the DONE slot as its own labelled line, such as '- **DONE:** <the check that settles it>'" ;;
+    *) fix="Write the DONE slot as its own labeled line, such as '- **DONE:** <the check that settles it>'" ;;
   esac
   [ "$rc" -eq 0 ] && [[ $said == *'goal set from DONE'* ]] \
     || deny "walk-no-goal" "$name is answered walk away, but the handoff answered \"${said:0:240}\", so the fresh session would open with no grader. $fix, then exit plan mode again."

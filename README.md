@@ -105,4 +105,4 @@ The build met all six of its checks in one 39-minute unattended pass.
 The write-up, with a real planning session as the worked example:
 [ian-provencher.com/blog/intent-lock](https://ian-provencher.com/blog/intent-lock).
 
-MIT licence. By [Ian Provencher](https://github.com/AceP2317).
+MIT license. By [Ian Provencher](https://github.com/AceP2317).

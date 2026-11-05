@@ -56,7 +56,7 @@ if [ -n "$sid" ]; then
   mkdir "$STATE/sessions/$safe" 2>/dev/null || full=0
 fi
 
-# A summary takes the method away: text a hook added earlier is summarised with the rest. A full send
+# A summary takes the method away: text a hook added earlier is summarized with the rest. A full send
 # records the transcript's size; a later plan turn checks only the bytes added since for a summary.
 if [ "$full" = 0 ] && [ -n "$tp" ] && [ -f "$tp" ]; then
   if [ -f "$STATE/sessions/$safe/at" ]; then

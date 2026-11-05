@@ -2,7 +2,7 @@
 
 Paste into a project's `CLAUDE.md`, or import it there with a line reading
 `@~/.claude/intent-lock/rules/questions.md`. The kit's `question-guard.sh` refuses the mechanical
-breaches; the judgement half is yours.
+breaches; the judgment half is yours.
 
 - **Every decision goes through the question box** (`AskUserQuestion`), never as a question written
   in reply prose. A set of named options is answered with one pick; a question in prose waits for the

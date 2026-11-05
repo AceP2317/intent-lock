@@ -1,6 +1,6 @@
 # Build-shape question packs
 
-Read on demand, when the shape of the build is recognisable. Use the matching pack instead of the
+Read on demand, when the shape of the build is recognizable. Use the matching pack instead of the
 generic six slots. If no pack fits, fall back to the slots and consider adding a pack.
 
 Each pack is a candidate set, not a form. Skip what context already settled; the job is an empty
@@ -46,7 +46,7 @@ A demo, a featured post, a business site.
 - Where must it run, and what does each extra surface cost to keep in step?
 - Does it shape how the model responds, or does it do a thing? Does it fire on a command or on the
   work appearing?
-- What must it never do? A skill with no stated anti-scope drifts into its neighbours.
+- What must it never do? A skill with no stated anti-scope drifts into its neighbors.
 - Which existing skill does it overlap? Two near-identical descriptions compete and neither wins.
 - Is the output objectively checkable? If yes, capture a few verified input and output pairs now,
   while a correct run is in front of you.

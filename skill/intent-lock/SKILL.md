@@ -130,7 +130,7 @@ from it?"** Write the answer into the plan as its own line:
 
 ## Build shapes
 
-When the build's shape is recognisable, read `references/build-shapes.md` for its question pack:
+When the build's shape is recognizable, read `references/build-shapes.md` for its question pack:
 internal business tool, public or portfolio work, skill, hook or plumbing, frontend or site, remote
 server, analysis document, new project.
 <!-- INTENT-INJECT:END -->
