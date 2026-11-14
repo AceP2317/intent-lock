@@ -28,8 +28,15 @@ summary() {
 
 OUT=''; ERR=''
 fresh() { rm -rf "$T/home" "$T/state"; mkdir -p "$T/home/.claude" "$T/state"; }
+# The three settings the hooks read from Claude Code's environment are removed unless an arm sets one
+# (WATCH_HERE, GUIDE, ENTRY), so a suite run from inside Claude Code tests them absent, not inherited.
+unset_kit_env() { KITENV=(env -u INTENT_LOCK_WATCH_HERE -u INTENT_LOCK_GUIDE_MODEL -u CLAUDE_CODE_ENTRYPOINT)
+  [ -n "${WATCH_HERE+x}" ] && KITENV+=(INTENT_LOCK_WATCH_HERE="$WATCH_HERE")
+  [ -n "${GUIDE+x}" ] && KITENV+=(INTENT_LOCK_GUIDE_MODEL="$GUIDE")
+  [ -n "${ENTRY+x}" ] && KITENV+=(CLAUDE_CODE_ENTRYPOINT="$ENTRY"); }
 run() {  # run <hook> <json>  -> OUT (stdout), ERR (stderr)
-  OUT=$(printf '%s' "$2" | HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="${KITDIR:-$KIT}" \
+  unset_kit_env
+  OUT=$(printf '%s' "$2" | "${KITENV[@]}" HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="${KITDIR:-$KIT}" \
         INTENT_LOCK_HANDOFF_DRYRUN=1 INTENT_LOCK_PLATFORM="${PLATFORM:-}" bash "$H/$1" 2>"$T/err")
   ERR=$(cat "$T/err")
 }
@@ -102,7 +109,25 @@ plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->' '<!-- INTENT-
 plan '```' '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->' '```'; run intent-guard.sh "$(exitp)"; expect_deny "markers inside a code block do not seal the plan"
 plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'; run intent-guard.sh "$(exitp)"; expect_allow "a sealed WATCH plan is allowed"
 [[ $ERR == *"ALLOW confirmed watch"* ]] && grep -q 'ALLOW confirmed watch' "$T/state/guard.log" && ok "the allow is logged and printed" || bad "the allow is logged and printed" "$ERR"
-[ ! -f "$T/state/handoff/g1" ] && ok "a WATCH plan arms no handoff" || bad "a WATCH plan arms no handoff" "record exists"
+[[ $(cat "$T/state/handoff/g1" 2>/dev/null) == "gx1 "*/plan.md ]] && ok "a WATCH plan arms the handoff too, naming this exit and its plan" \
+  || bad "a WATCH plan arms the handoff too, naming this exit and its plan" "record: $(cat "$T/state/handoff/g1" 2>&1)"
+rm -f "$T/state/handoff/g1"
+WATCH_HERE=1 run intent-guard.sh "$(exitp)"; expect_allow "with INTENT_LOCK_WATCH_HERE=1 a sealed WATCH plan is allowed"
+[ ! -f "$T/state/handoff/g1" ] && [[ $ERR == *"ALLOW confirmed watch  "* ]] && ok "with INTENT_LOCK_WATCH_HERE=1 a WATCH plan arms nothing" \
+  || bad "with INTENT_LOCK_WATCH_HERE=1 a WATCH plan arms nothing" "record: $(cat "$T/state/handoff/g1" 2>&1) / $ERR"
+plan '<!-- INTENT-LOCK:CONFIRMED -->'; WATCH_HERE=1 run intent-guard.sh "$(exitp)"
+[[ $OUT == *"carries on in this window, because INTENT_LOCK_WATCH_HERE is set"* ]] && ok "the unanswered-question refusal says where a watched build runs with the switch set" \
+  || bad "the unanswered-question refusal says where a watched build runs with the switch set" "$OUT"
+run intent-guard.sh "$(exitp)"
+[[ $OUT == *"Watching: approval opens a fresh auto-mode session"*"watch stop"* ]] && ok "control: without the switch it says either answer opens a fresh session" \
+  || bad "control: without the switch it says either answer opens a fresh session" "$OUT"
+mkdir -p "$T/nohand/hooks"; cp "$H/intent-guard.sh" "$T/nohand/hooks/"; cp -r "$H/lib" "$T/nohand/hooks/"
+plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'; rm -f "$T/state/handoff/g1"
+H="$T/nohand/hooks" run intent-guard.sh "$(exitp)"
+! denied && [[ $OUT == *"plan-handoff.sh is missing"*"carry on in this window"* ]] && [ ! -f "$T/state/handoff/g1" ] \
+  && ok "a WATCH plan with no handoff beside the gate is allowed, arms nothing, and says so" || bad "a WATCH plan with no handoff beside the gate is allowed, arms nothing, and says so" "$OUT"
+plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; H="$T/nohand/hooks" run intent-guard.sh "$(exitp)"
+expect_deny "a WALK plan with no handoff beside the gate is refused"
 plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'; run intent-guard.sh "$(exitp)"; expect_allow "a sealed WALK plan is allowed"
 [[ $(cat "$T/state/handoff/g1" 2>/dev/null) == "gx1 "*/plan.md ]] && ok "a WALK plan arms the handoff for its session, naming this exit and its plan" \
   || bad "a WALK plan arms the handoff for its session, naming this exit and its plan" "record: $(cat "$T/state/handoff/g1" 2>&1)"
@@ -177,10 +202,30 @@ armh() { mkdir -p "$T/state/handoff"; printf '%s %s\n' "${1:-tu1}" "$T/plan.md" 
 fresh; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
 run plan-handoff.sh "$(approve)"
 [ -z "$OUT$ERR" ] && ok "negative control: not armed, so nothing happens" || bad "negative control: not armed, so nothing happens" "$OUT / $ERR"
+plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WATCH -->'
+PLATFORM=windows run plan-handoff.sh "$(approve)"
+[ -z "$OUT$ERR" ] && ok "a WATCH plan with no arm opens nothing" || bad "a WATCH plan with no arm opens nothing" "$OUT / $ERR"
+armh; PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR == *"DRYRUN windows launcher"* && $ERR == *"claude --permission-mode auto 'Carry out the approved plan"* && $ERR == *"stop at each watch stop the plan names"* && $ERR != *"'/goal "* && $OUT == *"fresh watched auto-mode session"* ]] \
+  && ok "an armed WATCH plan on Windows opens a watched session with no goal, and says which kind" || bad "an armed WATCH plan on Windows opens a watched session with no goal, and says which kind" "$OUT / $ERR"
+[[ $ERR == *"If this session has an advisor, consult it"* ]] && ok "the watched prompt tells the session when to consult a guide" || bad "the watched prompt tells the session when to consult a guide" "$ERR"
+armh; PLATFORM=unix run plan-handoff.sh "$(approve)"
+[[ $OUT == *"claude --permission-mode auto 'Carry out the approved plan"*"watch stop"* && $OUT != *"/goal Carry"* && $OUT == *"for a watched build"* ]] \
+  && ok "an armed WATCH plan on Mac or Linux hands over the command with no goal, and says which kind" || bad "an armed WATCH plan on Mac or Linux hands over the command with no goal, and says which kind" "$OUT"
+# A run with nobody present opens nothing, consumes its arm, and logs why; the control is the same arm
+# with Claude Code's interactive entrypoint, which opens.
+plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
+armh; ENTRY=sdk-cli PLATFORM=windows run plan-handoff.sh "$(approve)"
+[ -z "$OUT$ERR" ] && [ ! -f "$T/state/handoff/h1" ] && grep -q 'HANDOFF none: headless run (sdk-cli)' "$T/state/guard.log" \
+  && ok "a headless run opens nothing, consumes its arm, and logs why" || bad "a headless run opens nothing, consumes its arm, and logs why" "$OUT / $ERR"
+armh; ENTRY=cli PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR == *"DRYRUN windows launcher"* ]] && ok "control: the same arm in an interactive session opens" || bad "control: the same arm in an interactive session opens" "$OUT / $ERR"
 armh
 PLATFORM=windows run plan-handoff.sh "$(approve)"
-[[ $ERR == *"/goal Carry out the approved plan"* && $ERR == *'prints PASS for the ranking fixtures'* && $ERR == *"--permission-mode auto"* ]] \
-  && ok "armed on Windows: the launcher runs /goal built from the DONE slot in auto mode" || bad "armed on Windows: the launcher runs /goal built from the DONE slot in auto mode" "$ERR"
+[[ $ERR == *"/goal Carry out the approved plan"* && $ERR == *'prints PASS for the ranking fixtures'* && $ERR == *"--permission-mode auto"* && $OUT == *"fresh walk-away auto-mode session"* ]] \
+  && ok "armed on Windows: the launcher runs /goal built from the DONE slot in auto mode, and says which kind" || bad "armed on Windows: the launcher runs /goal built from the DONE slot in auto mode, and says which kind" "$OUT / $ERR"
+[[ $ERR == *"If this session has an advisor, consult it"*"Done when"* ]] && ok "the goal tells the session when to consult a guide, ahead of its DONE" || bad "the goal tells the session when to consult a guide, ahead of its DONE" "$ERR"
+[[ $ERR != *"--advisor"* && $ERR != *"LASTEXITCODE) {"* ]] && ok "control: with no guide setting, no --advisor and no error line" || bad "control: with no guide setting, no --advisor and no error line" "$ERR"
 [[ $ERR != *"NOT - no write-back"* ]] && ok "the goal stops at the end of the DONE slot" || bad "the goal stops at the end of the DONE slot" "$ERR"
 [ ! -f "$T/state/handoff/h1" ] && ok "the arm is consumed" || bad "the arm is consumed" "record still there"
 PLATFORM=windows run plan-handoff.sh "$(approve)"
@@ -200,6 +245,19 @@ armh
 PLATFORM=unix run plan-handoff.sh "$(approve_at "max'; rm -rf ~; '")"
 [[ $OUT == *"claude --permission-mode auto '/goal Carry out"* && $OUT != *"rm -rf"* ]] \
   && ok "a level the CLI does not take is dropped, never pasted into the command" || bad "a level the CLI does not take is dropped, never pasted into the command" "$OUT"
+# The guide. The made-up name carries brackets to prove they pass, quoted, on both platforms.
+armh; GUIDE='my-guide.2[x]' PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR == *"claude --permission-mode auto --advisor 'my-guide.2[x]' '/goal Carry out"* && $ERR == *"unset INTENT_LOCK_GUIDE_MODEL"* && $OUT == *"guide my-guide.2[x] passed"* ]] \
+  && ok "a guide setting on Windows starts the window with --advisor and an error line" || bad "a guide setting on Windows starts the window with --advisor and an error line" "$OUT / $ERR"
+armh; GUIDE='my-guide.2[x]' PLATFORM=unix run plan-handoff.sh "$(approve)"
+[[ $OUT == *"claude --permission-mode auto --advisor 'my-guide.2[x]' '/goal Carry out"* ]] \
+  && ok "a guide setting on Mac or Linux puts --advisor in the command" || bad "a guide setting on Mac or Linux puts --advisor in the command" "$OUT"
+armh; GUIDE="x'; rm -rf ~; '" PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR != *"--advisor"* && $ERR != *"rm -rf"* && $ERR == *"DRYRUN windows launcher"* && $OUT == *"INTENT_LOCK_GUIDE_MODEL was dropped"* ]] \
+  && ok "a guide setting that is not a model name is dropped, the window still opens, and it says so" || bad "a guide setting that is not a model name is dropped, the window still opens, and it says so" "$OUT / $ERR"
+armh; GUIDE='' PLATFORM=windows run plan-handoff.sh "$(approve)"
+[[ $ERR != *"--advisor"* && $OUT != *"dropped"* && $ERR == *"DRYRUN windows launcher"* ]] \
+  && ok "control: a guide setting left empty passes no flag and is not reported" || bad "control: a guide setting left empty passes no flag and is not reported" "$OUT / $ERR"
 printf '# Plan\n<!-- INTENT-LOCK:WAIVED -->\n<!-- INTENT-LOCK:WALK -->\n' > "$T/plan.md"; armh
 PLATFORM=windows run plan-handoff.sh "$(approve)"
 [[ $OUT == *"goal NOT set"* && $ERR != *"/goal Carry"* ]] && ok "a plan with no DONE slot opens without a goal, and says so" || bad "a plan with no DONE slot opens without a goal, and says so" "$OUT / $ERR"
@@ -223,17 +281,24 @@ TEMP="$T/te mp" PLATFORM=windows H="$T/old/hooks" run plan-handoff.sh "$(approve
 # run above, which fires.
 fresh; plan '<!-- INTENT-LOCK:CONFIRMED -->' '<!-- INTENT-LOCK:WALK -->'
 armh tu0; PLATFORM=windows run plan-handoff.sh "$(approve)"
-said "plan-handoff: The walk-away handoff was armed by an earlier plan exit" && [[ $ERR != *DRYRUN* ]] \
+said "plan-handoff: The plan handoff was armed by an earlier plan exit" && [[ $ERR != *DRYRUN* ]] \
   && ok "an arm an earlier exit left opens nothing, and the user and Claude are told" || bad "an arm an earlier exit left opens nothing, and the user and Claude are told" "$OUT / $ERR"
-armh; PLATFORM=windows run plan-handoff.sh "$(approve | jq -c --arg t "$(sed 's/:WALK/:WATCH/' "$T/plan.md")" '.tool_response.plan = $t')"
-said "plan-handoff: The approved plan says WATCH" && [[ $ERR != *DRYRUN* ]] \
-  && ok "a WALK changed to WATCH in the approval dialog opens nothing" || bad "a WALK changed to WATCH in the approval dialog opens nothing" "$OUT / $ERR"
+as_watch() { approve | jq -c --arg t "$(sed 's/:WALK/:WATCH/' "$T/plan.md")" '.tool_response.plan = $t'; }
+armh; PLATFORM=windows run plan-handoff.sh "$(as_watch)"
+[[ $ERR == *"DRYRUN windows launcher"* && $ERR == *"watch stop"* && $ERR != *"'/goal "* ]] \
+  && ok "a WALK changed to WATCH in the approval dialog opens a watched session instead" || bad "a WALK changed to WATCH in the approval dialog opens a watched session instead" "$OUT / $ERR"
+armh; WATCH_HERE=1 PLATFORM=windows run plan-handoff.sh "$(as_watch)"
+said "plan-handoff: The approved plan says WATCH" && [[ $ERR != *DRYRUN* && $OUT == *"INTENT_LOCK_WATCH_HERE is set"* ]] \
+  && ok "with INTENT_LOCK_WATCH_HERE=1, a WALK changed to WATCH opens nothing" || bad "with INTENT_LOCK_WATCH_HERE=1, a WALK changed to WATCH opens nothing" "$OUT / $ERR"
 armh; PLATFORM=windows run plan-handoff.sh "$(approve | jq -c --arg t "$INTENT" '.tool_response.plan = $t')"
-said "plan-handoff: The approved plan no longer carries its WALK line" && [[ $ERR != *DRYRUN* ]] \
+said "plan-handoff: The approved plan no longer carries a WATCH or WALK line" && [[ $ERR != *DRYRUN* ]] \
   && ok "a WALK line deleted in the approval dialog opens nothing" || bad "a WALK line deleted in the approval dialog opens nothing" "$OUT / $ERR"
+armh; PLATFORM=windows run plan-handoff.sh "$(approve | jq -c --arg t "$(cat "$T/plan.md"; printf '\n<!-- INTENT-LOCK:WATCH -->\n')" '.tool_response.plan = $t')"
+said "plan-handoff: The approved plan carries both" && [[ $ERR != *DRYRUN* ]] \
+  && ok "a plan given both lines in the approval dialog opens nothing" || bad "a plan given both lines in the approval dialog opens nothing" "$OUT / $ERR"
 mkdir -p "$T/bare"; cp "$H/plan-handoff.sh" "$H/intent-guard.sh" "$T/bare/"
 armh; PLATFORM=windows H="$T/bare" run plan-handoff.sh "$(approve)"
-said "plan-handoff: The walk-away handoff was armed, but lib/marker.sh is missing" && [[ $ERR != *DRYRUN* ]] \
+said "plan-handoff: The plan handoff was armed, but lib/marker.sh is missing" && [[ $ERR != *DRYRUN* ]] \
   && ok "a handoff with no marker reader beside it opens nothing, and says so" || bad "a handoff with no marker reader beside it opens nothing, and says so" "$OUT / $ERR"
 H="$T/bare" run intent-guard.sh "$(exitp)"
 said "intent-lock: lib/marker.sh is missing" && ok "a gate with no marker reader beside it lets the exit through, and says so" \
@@ -283,33 +348,46 @@ fresh; { printf '%s\n\n' "${INTENT/- \*\*DONE\*\* -/- **DONE** - $long}"; printf
 run intent-guard.sh "$(exitp)"
 [[ $OUT == *"4,000"* && $OUT == *"Shorten the DONE slot"* ]] \
   && ok "a DONE refused for its length is told to shorten, not to relabel" || bad "a DONE refused for its length is told to shorten, not to relabel" "$OUT"
+# The guide sentence counts toward the 4,000: a DONE that fits only without it is refused, and the same
+# DONE 200 characters shorter is the control that passes.
+bare="Carry out the approved plan at /p.md; read it first, it is sealed, approved and the scope. Done when all of this is shown by output in this conversation: "
+edge() { printf '%s\n' "- DONE: $(printf "%$(( 4000 - ${#bare} - $1 ))s" '' | tr ' ' y)" | bash "$H/plan-handoff.sh" --check-done /p.md 2>&1; }
+said=$(edge 10); [[ $said == *"goal NOT set"*"4,000"* ]] && ok "a DONE that fits only without the guide sentence is refused" || bad "a DONE that fits only without the guide sentence is refused" "$said"
+said=$(edge 200); [[ $said == *"goal set from DONE"* ]] && ok "control: the same DONE 190 characters shorter fits" || bad "control: the same DONE 190 characters shorter fits" "$said"
 
 group "plan-handoff: the new window claims the launch, and a late one builds nothing"
 # The real Windows path with no window opened, in this test's own temp folder; a stand-in claude.
 claim_run() {  # claim_run <session> <wait seconds> <folder>; output in $T/<session>.out
+  unset_kit_env
   jq -nc --arg p "$T/plan.md" --arg c "$(cygpath -w "$3")" --arg s "$1" \
      '{session_id:$s,tool_use_id:("tu-" + $s),cwd:$c,tool_name:"ExitPlanMode",tool_input:{planFilePath:$p},tool_response:{filePath:$p}}' \
-  | HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="$KIT" INTENT_LOCK_PLATFORM=windows TEMP="$T/tmp" \
+  | "${KITENV[@]}" HOME="$T/home" INTENT_LOCK_STATE="$T/state" INTENT_LOCK_KIT="$KIT" INTENT_LOCK_PLATFORM=windows TEMP="$T/tmp" \
     INTENT_LOCK_HANDOFF_NOWINDOW=1 INTENT_LOCK_HANDOFF_WAIT="$2" bash "$H/plan-handoff.sh" > "$T/$1.out" 2>&1
 }
 launcher_ready() { local i; for i in $(seq 1 100); do [ -f "$T/tmp/intent-lock-handoff-$1.ps1" ] && return 0; sleep 0.2; done; return 1; }
 # The approving session's variables are planted, as the new tab inherits them from this hook's process.
-stand_in() { pwsh.exe -NoProfile -Command "\$env:CLAUDE_CODE_SESSION_ID = 'planted'; \$env:CLAUDECODE = '1'; \$env:INTENT_LOCK_PROBE = 'kept'
-  function claude { 'CLAUDE-RAN in ' + (Get-Location).Path + ' IDENTITY=[' + \$env:CLAUDE_CODE_SESSION_ID + \$env:CLAUDECODE + '] PROBE=' + \$env:INTENT_LOCK_PROBE }
+# stand_in <session> [claude body]: the default stand-in reports where it ran and what it inherited.
+stand_in() { local body="${2:-'CLAUDE-RAN in ' + (Get-Location).Path + ' IDENTITY=[' + \$env:CLAUDE_CODE_SESSION_ID + \$env:CLAUDECODE + '] PROBE=' + \$env:INTENT_LOCK_PROBE}"
+  pwsh.exe -NoProfile -Command "\$env:CLAUDE_CODE_SESSION_ID = 'planted'; \$env:CLAUDECODE = '1'; \$env:INTENT_LOCK_PROBE = 'kept'
+  function claude { $body }
   . '$(cygpath -w "$T/tmp/intent-lock-handoff-$1.ps1")'" 2>&1 | tr -d '\r'; }
 if command -v pwsh.exe >/dev/null 2>&1; then
-  fresh; mkdir -p "$T/tmp" "$T/state/handoff" "$T/w1" "$T/w2" "$T/w3"
+  fresh; mkdir -p "$T/tmp" "$T/state/handoff" "$T/w1" "$T/w2" "$T/w3" "$T/w4" "$T/w5"
   printf '%s\n' '## Intent' '' '- DONE: the stand-in reports.' '<!-- INTENT-LOCK:WALK -->' > "$T/plan.md"
-  for s in c1 c2 c3; do printf 'tu-%s %s\n' "$s" "$T/plan.md" > "$T/state/handoff/$s"; done
+  for s in c1 c2 c3 c4 c5; do printf 'tu-%s %s\n' "$s" "$T/plan.md" > "$T/state/handoff/$s"; done
   claim_run c1 30 "$T/w1" & j1=$!
   claim_run c3 30 "$T/w3" & j3=$!
+  GUIDE='my-guide.2[x]' claim_run c4 30 "$T/w4" & j4=$!
+  GUIDE='my-guide.2[x]' claim_run c5 30 "$T/w5" & j5=$!
   claim_run c2 2 "$T/w2"
   launcher_ready c1 && o1=$(stand_in c1) || o1="no launcher was written"
   launcher_ready c3 && { rm -rf "$T/w3"; o3=$(stand_in c3); } || o3="no launcher was written"
+  launcher_ready c4 && o4=$(stand_in c4 "\$global:LASTEXITCODE = 3; 'CLAUDE-FAILED ARGS=' + (\$args -join '|')") || o4="no launcher was written"
+  launcher_ready c5 && o5=$(stand_in c5 "'CLAUDE-RAN ARGS=' + (\$args -join '|')") || o5="no launcher was written"
   o2=$(stand_in c2)
-  wait "$j1" "$j3"
+  wait "$j1" "$j3" "$j4" "$j5"
   [[ $o1 == *"CLAUDE-RAN in $(cygpath -w "$T/w1")"* && $(cat "$T/c1.out") == *"HAS FIRED"* ]] \
-    && ok "a window that claims the launch in time builds in the plan's folder" || bad "a window that claims the launch in time builds in the plan's folder" "$o1 / $(cat "$T/c1.out")"
+    && ok "a window that claims the launch in time builds in the planning session's folder" || bad "a window that claims the launch in time builds in the planning session's folder" "$o1 / $(cat "$T/c1.out")"
   [[ $o1 == *"IDENTITY=[] PROBE=kept"* ]] \
     && ok "claude starts without the approving session's own variables; control: another variable stays" \
     || bad "claude starts without the approving session's own variables; control: another variable stays" "$o1"
@@ -317,8 +395,12 @@ if command -v pwsh.exe >/dev/null 2>&1; then
     && ok "a window that starts after the wait ran out builds nothing" || bad "a window that starts after the wait ran out builds nothing" "$o2 / $(cat "$T/c2.out")"
   [[ $o3 == *FOLDER-FAILED* && $o3 != *CLAUDE-RAN* && $(cat "$T/c3.out") == *"could not enter"* ]] \
     && ok "a window whose folder is gone stops instead of building elsewhere" || bad "a window whose folder is gone stops instead of building elsewhere" "$o3 / $(cat "$T/c3.out")"
+  [[ $o4 == *"CLAUDE-FAILED ARGS=--permission-mode|auto|--advisor|my-guide.2[x]|/goal "* && $o4 == *"intent-lock: claude ended with an error"*"unset INTENT_LOCK_GUIDE_MODEL"* ]] \
+    && ok "with a guide set, a claude that ends in an error leaves one line naming the setting to unset" || bad "with a guide set, a claude that ends in an error leaves one line naming the setting to unset" "$o4"
+  [[ $o5 == *"CLAUDE-RAN ARGS=--permission-mode|auto|--advisor|my-guide.2[x]|/goal "* && $o5 != *"ended with an error"* ]] \
+    && ok "control: with a guide set, a claude that ends cleanly leaves no such line" || bad "control: with a guide set, a claude that ends cleanly leaves no such line" "$o5"
 else
-  skip "the four window-claim arms: no pwsh.exe here, so the claim cannot be run"
+  skip "the six window-claim arms: no pwsh.exe here, so the claim cannot be run"
 fi
 
 summary

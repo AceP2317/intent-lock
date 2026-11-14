@@ -4,7 +4,10 @@
 # Refuses to leave plan mode until the plan file is sealed:
 #   1. an `## Intent` section closed by <!-- INTENT-LOCK:CONFIRMED -->, or <!-- INTENT-LOCK:WAIVED -->
 #   2. exactly one of <!-- INTENT-LOCK:WATCH --> or <!-- INTENT-LOCK:WALK -->
-# A WALK plan arms plan-handoff.sh for this exit, which opens a fresh auto-mode session on approval.
+# Either answer arms plan-handoff.sh for this exit, which opens a fresh auto-mode session on approval:
+# a walk-away build under a /goal grader, or a watched build with no grader that stops at each watch
+# stop the plan names. INTENT_LOCK_WATCH_HERE=1 arms nothing for a WATCH plan, so a watched build
+# carries on in the planning window as Claude Code normally does.
 # A WALK passes only when plan-handoff.sh --check-done can build a /goal from the plan's DONE line.
 #
 # Claude Code injects the plan's path (tool_input.planFilePath) and text (tool_input.plan) into this
@@ -36,7 +39,7 @@ say() {
 
 if ! command -v jq >/dev/null 2>&1; then
   warn "jq is not installed, so this plan exit was NOT checked"
-  printf '%s\n' '{"systemMessage":"intent-lock: jq is not installed, so this plan exit was NOT checked","hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"intent-lock: jq is not installed, so this plan exit was NOT checked, and no walk-away session will open from it. Say this to the user in your next reply."}}'
+  printf '%s\n' '{"systemMessage":"intent-lock: jq is not installed, so this plan exit was NOT checked","hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"intent-lock: jq is not installed, so this plan exit was NOT checked, and no fresh build session will open from it. Say this to the user in your next reply."}}'
   exit 0
 fi
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null | tr -d '\r'; }
@@ -112,15 +115,21 @@ if has WALK; then
   [ -z "$how" ] || deny "two-answers" "$name carries both <!-- INTENT-LOCK:WATCH --> and <!-- INTENT-LOCK:WALK -->. Keep the line matching the user's answer, delete the other, then exit plan mode again."
   how=walk
 fi
-[ -n "$how" ] || deny "no-watch-walk" "$name is sealed, and one question is left. Ask the user in the question box: \"Will you watch this build in this window, or walk away from it?\" Watching: approval continues in this window as normal. Walking away: approval opens a fresh auto-mode session that builds the plan under a /goal check made from the DONE slot. Write the answer into the plan as a line of its own, <!-- INTENT-LOCK:WATCH --> or <!-- INTENT-LOCK:WALK -->, then exit plan mode again."
+here=0; [ "${INTENT_LOCK_WATCH_HERE:-}" = 1 ] && here=1
+if [ "$here" = 1 ]; then
+  watching="Watching: approval carries on in this window, because INTENT_LOCK_WATCH_HERE is set."
+else
+  watching="Watching: approval opens a fresh auto-mode session that builds the plan with no grader, and stops at each watch stop the plan names and before anything the plan does not cover, so list the watch stops in the plan."
+fi
+[ -n "$how" ] || deny "no-watch-walk" "$name is sealed, and one question is left. Ask the user in the question box: \"Will you watch this build, or walk away from it?\" $watching Walking away: approval opens a fresh auto-mode session that builds the plan under a /goal check made from the DONE slot. Write the answer into the plan as a line of its own, <!-- INTENT-LOCK:WATCH --> or <!-- INTENT-LOCK:WALK -->, then exit plan mode again."
 
 # A walk-away exists to have a separate grader watch the build, so it passes only when the handoff
 # says it can build the /goal from this plan. The handoff answers for itself rather than this file
 # keeping a copy of its DONE pattern. The words are required as well as the exit code, so a missing
 # or stand-in handoff that exits 0 having checked nothing does not count.
+ho="$(dirname "${BASH_SOURCE[0]}")/plan-handoff.sh"
 if [ "$how" = walk ]; then
-  ho="$(dirname "${BASH_SOURCE[0]}")/plan-handoff.sh"
-  [ -f "$ho" ] || deny "walk-unchecked" "$name is answered walk away, but plan-handoff.sh is missing beside this hook ($ho), so no fresh session can open. Ask the user whether to watch here instead, and change the plan's line to <!-- INTENT-LOCK:WATCH --> if they agree."
+  [ -f "$ho" ] || deny "walk-unchecked" "$name is answered walk away, but plan-handoff.sh is missing beside this hook ($ho), so no fresh session can open and nothing would grade the build. Put plan-handoff.sh back beside this hook, or ask the user whether to watch this build instead and change the plan's line to <!-- INTENT-LOCK:WATCH --> if they agree; with no handoff, a watched build carries on in this window."
   said=$(printf '%s' "$plan" | bash "$ho" --check-done "${pf:-(the plan)}" 2>&1); rc=$?
   said=${said//$'\r'/}
   # The advice follows the handoff's reason: a plan refused for its length has a DONE line already.
@@ -133,16 +142,25 @@ if [ "$how" = walk ]; then
 fi
 
 rec="$STATE/handoff/$sid"
-if [ "$how" = walk ]; then
+[ "$how" = walk ] && kind=walk-away || kind=watched
+arm=1; note=''
+if [ "$how" = watch ] && [ "$here" = 1 ]; then
+  arm=0
+elif [ "$how" = watch ] && [ ! -f "$ho" ]; then
+  arm=0; note="plan-handoff.sh is missing beside this hook ($ho), so no fresh session can open; the watched build will carry on in this window"
+fi
+if [ "$arm" = 1 ]; then
   if [ -z "$sid" ]; then
-    say "no session id in the hook input, so the walk-away handoff could not be armed; approval will continue in this window"
+    arm=0; note="no session id in the hook input, so the $kind handoff could not be armed; approval will carry on in this window"
   elif ! { mkdir -p "$STATE/handoff" && printf '%s %s\n' "${tu:--}" "${pf:--}" > "$rec"; } 2>/dev/null; then
-    say "could not write $rec, so the walk-away handoff is NOT armed; approval will continue in this window"
+    arm=0; note="could not write $rec, so the $kind handoff is NOT armed; approval will carry on in this window"
   fi
 else
   [ -n "$sid" ] && rm -f "$rec" 2>/dev/null
 fi
+[ "$arm" = 1 ] && armed=" armed" || armed=''
 
-log "ALLOW $seal $how  $name"
-warn "ALLOW $seal $how  $name"
+log "ALLOW $seal $how$armed  $name"
+warn "ALLOW $seal $how$armed  $name"
+[ -n "$note" ] && say "$note"
 exit 0

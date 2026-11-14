@@ -119,12 +119,19 @@ of the plan file covering the six slots and any accepted risks, then the line:
 
 The user can skip the gate for one plan with `<!-- INTENT-LOCK:WAIVED -->` instead.
 
-Then ask one last question in the box: **"Will you watch this build in this window, or walk away
-from it?"** Write the answer into the plan as its own line:
+Then ask one last question in the box: **"Will you watch this build, or walk away from it?"**
+Either answer opens a fresh auto-mode session on approval, in this session's folder, so the build does
+not carry this conversation on every request. Write the answer into the plan as its own line:
 
-    <!-- INTENT-LOCK:WATCH -->   approval continues in this window, as normal
-    <!-- INTENT-LOCK:WALK -->    approval opens a fresh auto-mode session that builds the plan
-                                 under a /goal check made from the DONE slot
+    <!-- INTENT-LOCK:WATCH -->   the fresh session has no grader; it stops at each watch stop the
+                                 plan names, and before anything the plan does not cover
+    <!-- INTENT-LOCK:WALK -->    the fresh session builds the plan under a /goal check made from
+                                 the DONE slot
+
+A watched plan lists its watch stops: each point where the build stops to ask, and which steps the
+answer there settles, on a line such as "Watch stops: after step 3, where you pick a look (settles
+step 3)." Ask the user where they want them. When `INTENT_LOCK_WATCH_HERE=1` is set, a watched build
+carries on in this window instead, as Claude Code normally does.
 
 `intent-guard.sh` refuses to leave plan mode until both lines are there.
 

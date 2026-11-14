@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # plan-handoff.sh -- PostToolUse hook on ExitPlanMode, part of the intent-lock kit (MIT, Ian Provencher).
 #
-# After a plan is approved, and ONLY when intent-guard.sh armed it (the plan said WALK), this opens a
-# fresh Claude Code session in auto mode whose first prompt is
-#     /goal Carry out the approved plan at <path> ... Done when ... <the plan's DONE slot>
-# so a separate grader checks the build against DONE from its first turn, in a clean context.
+# After a plan is approved, and ONLY when intent-guard.sh armed it, this opens a fresh Claude Code
+# session in auto mode, in the planning session's folder. The plan as approved picks which kind, because the
+# approval dialog can edit it:
+#   WALK   the first prompt is  /goal Carry out the approved plan at <path> ... Done when ... <DONE>
+#          so a separate grader checks the build against DONE from its first turn
+#   WATCH  no /goal; the first prompt says the person is present, and the session stops at each watch
+#          stop the plan names and before anything the plan does not cover
 #
 #   Windows   opens a new Windows Terminal tab (or a PowerShell window) running that command
 #   Mac/Linux prints the exact command for you to run in a new terminal
@@ -12,8 +15,11 @@
 # With nothing armed it prints nothing and approval behaves exactly as normal. The arm is consumed
 # before anything else, so a failure means a normal approval, never a handoff that fires next time.
 # It fires only for the exit that armed it, named by the id both hooks receive for one ExitPlanMode
-# call, and only while the plan as approved still says WALK: the approval dialog can edit the plan,
-# and a WALK changed there to WATCH is the user choosing to watch.
+# call. A run with nobody present (CLAUDE_CODE_ENTRYPOINT starting sdk, as in claude -p or the Agent
+# SDK) opens nothing, quietly, and logs that it did not. INTENT_LOCK_WATCH_HERE=1 keeps a watched
+# build in this window, including a WALK changed to WATCH in the approval dialog.
+# INTENT_LOCK_GUIDE_MODEL, a model alias or id, starts the new session with --advisor set to it; with
+# it unset no flag is passed and Claude Code's own guide setting applies.
 # Fails open, loudly: any problem is printed for the user's screen and told to Claude, which says so
 # and carries on in this window.
 #
@@ -94,11 +100,14 @@ done_of() {
     }'
 }
 
+# Both opening prompts carry this, and a goal counts it toward its 4,000 characters.
+guide_ask="If this session has an advisor, consult it before leaving the plan's path, when the same check fails twice, and before reporting the plan done."
+
 # Sets cond and goal_note from the plan text and the path shown to the new session.
 goal_for() {
   local d; d=$(done_of "$1"); cond=''
   if [ -n "${d// /}" ]; then
-    cond="Carry out the approved plan at $2; read it first, it is sealed, approved and the scope. Done when all of this is shown by output in this conversation: $d"
+    cond="Carry out the approved plan at $2; read it first, it is sealed, approved and the scope. $guide_ask Done when all of this is shown by output in this conversation: $d"
     if [ "${#cond}" -le 4000 ]; then goal_note="goal set from DONE (${#cond} characters)"
     else goal_note="goal NOT set: the condition would be ${#cond} characters, past the 4,000 /goal accepts"; cond=''; fi
   else
@@ -127,7 +136,7 @@ say() {
   if command -v jq >/dev/null 2>&1; then
     jq -cn --arg c "plan-handoff: $1" '{systemMessage:$c, hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}'
   else
-    printf '%s\n' '{"systemMessage":"plan-handoff: the walk-away handoff was armed, but jq is not installed, so no fresh session was opened.","hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"plan-handoff: the walk-away handoff was armed, but jq is not installed, so no fresh session was opened. Tell the user in one line and carry on in this window."}}'
+    printf '%s\n' '{"systemMessage":"plan-handoff: the plan handoff was armed, but jq is not installed, so no fresh session was opened.","hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"plan-handoff: the plan handoff was armed, but jq is not installed, so no fresh session was opened. Tell the user in one line and carry on in this window."}}'
   fi
   exit 0
 }
@@ -136,10 +145,15 @@ rec_id=''; recorded=''
 read -r rec_id recorded < "$rec" 2>/dev/null
 rec_id=${rec_id//$'\r'/}; recorded=${recorded//$'\r'/}
 rm -f "$rec" 2>/dev/null
+# Nobody is present to use a window, and a walk-away would be a second unattended build of one plan.
+case "${CLAUDE_CODE_ENTRYPOINT:-}" in
+  sdk*) printf '%s  HANDOFF none: headless run (%s)\n' "$(date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null)" "$CLAUDE_CODE_ENTRYPOINT" >> "$STATE/guard.log" 2>/dev/null
+        exit 0 ;;
+esac
 command -v jq >/dev/null 2>&1 || say "jq is not installed"
 tu=$(printf '%s' "$input" | jq -r '.tool_use_id // empty' 2>/dev/null | tr -d '\r')
 [ -n "$tu" ] && [ "$rec_id" = "$tu" ] \
-  || say "The walk-away handoff was armed by an earlier plan exit, not the one just approved, so no fresh session was opened. Tell the user in one line and carry on in this window."
+  || say "The plan handoff was armed by an earlier plan exit, not the one just approved, so no fresh session was opened. Tell the user in one line and carry on in this window."
 
 plan_path=$(printf '%s' "$input" | jq -r '(.tool_response | objects | .filePath) // .tool_input.planFilePath // empty' 2>/dev/null | tr -d '\r')
 [ -n "$plan_path" ] || { [ "$recorded" != "-" ] && plan_path="$recorded"; }
@@ -147,18 +161,29 @@ plan=$(printf '%s' "$input" | jq -r '(.tool_response | objects | .plan) // .tool
 if [ -z "${plan//[[:space:]]/}" ] && [ -n "$plan_path" ] && { : < "$plan_path"; } 2>/dev/null; then
   plan=$(cat "$plan_path")
 fi
-[ -n "${plan//[[:space:]]/}" ] || say "The walk-away handoff was armed, but the approved plan could not be read, so no fresh session was opened. Tell the user in one line and carry on in this window."
+[ -n "${plan//[[:space:]]/}" ] || say "The plan handoff was armed, but the approved plan could not be read, so no fresh session was opened. Tell the user in one line and carry on in this window."
 . "$(dirname "${BASH_SOURCE[0]}")/lib/marker.sh" 2>/dev/null \
-  || say "The walk-away handoff was armed, but lib/marker.sh is missing beside this hook, so the approved plan's WATCH or WALK line could not be read and no fresh session was opened. Tell the user in one line and carry on in this window."
-has_marker "$plan" WATCH \
-  && say "The approved plan says WATCH, a change made in the approval dialog, so no fresh session was opened. Tell the user in one line and carry on in this window."
-has_marker "$plan" WALK \
-  || say "The approved plan no longer carries its WALK line, so no fresh session was opened. Tell the user in one line and carry on in this window."
+  || say "The plan handoff was armed, but lib/marker.sh is missing beside this hook, so the approved plan's WATCH or WALK line could not be read and no fresh session was opened. Tell the user in one line and carry on in this window."
+kind=''
+has_marker "$plan" WATCH && kind=watched
+if has_marker "$plan" WALK; then
+  [ -z "$kind" ] || say "The approved plan carries both a WATCH and a WALK line, an edit made in the approval dialog, so no fresh session was opened. Tell the user in one line and carry on in this window."
+  kind=walk-away
+fi
+[ -n "$kind" ] || say "The approved plan no longer carries a WATCH or WALK line, so no fresh session was opened. Tell the user in one line and carry on in this window."
+[ "$kind" = watched ] && [ "${INTENT_LOCK_WATCH_HERE:-}" = 1 ] \
+  && say "The approved plan says WATCH, a change made in the approval dialog, and INTENT_LOCK_WATCH_HERE is set, so no fresh session was opened: the watched build carries on in this window. Tell the user in one line and carry on here."
 
 shown_path="$plan_path"; [ -n "$shown_path" ] || shown_path="(the plan approved in the previous session)"
-goal_for "$plan" "$shown_path"
-[ -n "$cond" ] && prompt="/goal $cond"
-[ -n "${prompt:-}" ] || prompt="Carry out the approved plan at $shown_path. Read it first; it is sealed, approved and the scope. No /goal was set, because ${goal_note#goal NOT set: }, so tell the user no separate grader is watching this build."
+prompt=''
+if [ "$kind" = walk-away ]; then
+  goal_for "$plan" "$shown_path"
+  [ -n "$cond" ] && prompt="/goal $cond"
+  [ -n "${prompt:-}" ] || prompt="Carry out the approved plan at $shown_path. Read it first; it is sealed, approved and the scope. $guide_ask No /goal was set, because ${goal_note#goal NOT set: }, so tell the user no separate grader is watching this build."
+else
+  goal_note="no /goal, because the user is watching"
+  prompt="Carry out the approved plan at $shown_path. Read it first; it is sealed, approved and the scope. The person who approved it is present and watching this build: stop at each watch stop the plan names, and before anything the plan does not cover, and ask them there. $guide_ask No /goal was set, because they chose to watch this build, so tell them no separate grader is watching it."
+fi
 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null | tr -d '\r'); [ -n "$cwd" ] || cwd="$PWD"
 # The approving window's effort level, from this hook's own input. Without it the new session starts
@@ -170,7 +195,20 @@ case "$effort" in
   *) eff_flag=''; goal_note="$goal_note; effort not carried, so the saved default applies" ;;
 esac
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
-unix_cmd="cd $(sq "$cwd") && claude --permission-mode auto$eff_flag $(sq "$prompt")"
+psq() { printf "'%s'" "${1//\'/\'\'}"; }
+# The guide: only a model alias or id reaches the command line, and it is quoted even so, because a
+# bracketed id such as name[1m] is a pattern to an unquoted shell word.
+gm="${INTENT_LOCK_GUIDE_MODEL:-}"; guide_u=''; guide_w=''; guide_fail=''; model_re='^[][A-Za-z0-9.-]+$'
+if [ -n "$gm" ]; then
+  if [[ $gm =~ $model_re ]]; then
+    guide_u=" --advisor $(sq "$gm")"; guide_w=" --advisor $(psq "$gm")"; goal_note="$goal_note; guide $gm passed with --advisor"
+    guide_fail="
+if (\$LASTEXITCODE) { Write-Host $(psq "intent-lock: claude ended with an error. If it was about the guide model, unset INTENT_LOCK_GUIDE_MODEL, which passed --advisor $gm, and run claude here again with the plan's path.") }"
+  else
+    goal_note="$goal_note; INTENT_LOCK_GUIDE_MODEL was dropped, because it held more than letters, digits, dots, dashes and square brackets, so Claude Code's own guide setting applies"
+  fi
+fi
+unix_cmd="cd $(sq "$cwd") && claude --permission-mode auto$eff_flag$guide_u $(sq "$prompt")"
 
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) win=1 ;; *) win=0 ;; esac
 [ "${OS:-}" = "Windows_NT" ] && win=1
@@ -178,12 +216,11 @@ case "${INTENT_LOCK_PLATFORM:-}" in unix) win=0 ;; windows) win=1 ;; esac
 
 if [ "$win" = 0 ]; then
   [ "${INTENT_LOCK_HANDOFF_DRYRUN:-}" = 1 ] && printf 'DRYRUN unix: %s\n' "$unix_cmd" >&2
-  say "THE PLAN HANDOFF IS ARMED ($goal_note). Do not start work on this plan here. Show the user this exact command to run in a new terminal, explain that it opens a fresh auto-mode session that builds the plan, and stop:
+  say "THE PLAN HANDOFF IS ARMED for a $kind build ($goal_note). Do not start work on this plan here. Show the user this exact command to run in a new terminal, explain that it opens a fresh $kind auto-mode session that builds the plan, and stop:
 
     $unix_cmd"
 fi
 
-psq() { printf "'%s'" "${1//\'/\'\'}"; }
 # Start-Process joins -ArgumentList with plain spaces and adds no quotes, so a path holding a space
 # arrives in two pieces (2026-10-13: a folder named "New Bern" reached Windows Terminal as a program
 # called "Bern"). psqq hands PowerShell a literal whose value carries its own double quotes.
@@ -192,7 +229,7 @@ wcwd=$(cygpath -w "$cwd" 2>/dev/null || printf '%s' "$cwd")
 tmp=$(cygpath -w "${TEMP:-/tmp}" 2>/dev/null || printf '%s' "${TEMP:-/tmp}")
 launcher="$tmp\\intent-lock-handoff-$sid.ps1"
 claim="$tmp\\intent-lock-handoff-$sid.claim"
-# The launcher enters the plan's folder or stops, because claude started anywhere else builds in the
+# The launcher enters the planning session's folder or stops, because claude started anywhere else builds in the
 # wrong place. Then it CLAIMS the launch: this hook claims the same file when its wait runs out, and
 # creating it is all-or-nothing, so a window that starts late finds the handoff called off and builds
 # nothing. The claim runs only from the real launcher file, so a printed copy run by a test writes none.
@@ -207,7 +244,8 @@ if (\$hand -ne 'STARTED') { Write-Host ('intent-lock: ' + \$hand); return }
 Remove-Item -LiteralPath $(psq "$launcher") -Force -ErrorAction SilentlyContinue
 \$keep = @(foreach (\$s in 'User', 'Machine') { [Environment]::GetEnvironmentVariables(\$s).Keys })
 Get-ChildItem Env: | Where-Object { (\$_.Name -match '^CLAUDE' -or \$_.Name -eq 'NO_COLOR') -and \$keep -notcontains \$_.Name } | Remove-Item
-claude --permission-mode auto$eff_flag $(psq "$prompt")"
+\$global:LASTEXITCODE = 0
+claude --permission-mode auto$eff_flag$guide_w $(psq "$prompt")$guide_fail"
 
 shell=pwsh.exe; command -v pwsh.exe >/dev/null 2>&1 || shell=powershell.exe
 # No -d for Windows Terminal: the launcher's first line moves into the folder itself, so the folder
@@ -220,7 +258,7 @@ if [ "${INTENT_LOCK_HANDOFF_DRYRUN:-}" = 1 ]; then
   printf 'DRYRUN windows launcher %s:\n%s\n' "$launcher" "$body" >&2
   printf 'DRYRUN windows terminal: wt.exe %s -NoExit -ExecutionPolicy Bypass -File %s\n' "$shell" "$launcher" >&2
   printf 'DRYRUN windows fallback: powershell.exe -NoProfile -Command %s\n' "$fallback" >&2
-  say "DRYRUN: the handoff would open a fresh auto-mode session in $wcwd ($goal_note)."
+  say "DRYRUN: the handoff would open a fresh $kind auto-mode session in $wcwd ($goal_note)."
 fi
 
 launcher_u=$(cygpath -u "$launcher" 2>/dev/null || printf '%s' "$launcher")
@@ -228,7 +266,7 @@ claim_u=$(cygpath -u "$claim" 2>/dev/null || printf '%s' "$claim")
 # The names are per session, so a claim left by an earlier handoff in this session is cleared first.
 rm -f "$claim_u" 2>/dev/null
 printf '%s\n' "$body" > "$launcher_u" 2>/dev/null \
-  || say "The walk-away handoff was armed, but its launcher could not be written to $launcher, so no fresh session was opened. Tell the user in one line and carry on in this window."
+  || say "The $kind handoff was armed, but its launcher could not be written to $launcher, so no fresh session was opened. Tell the user in one line and carry on in this window."
 # PSModulePath is cleared on the way out: started from PowerShell 7, Windows PowerShell inherits 7's
 # module folders first and can lose a built-in command (seen 2026-08-22 on the machine this came from).
 # INTENT_LOCK_HANDOFF_NOWINDOW=1 (tests only) opens no window, and the wait below runs as usual.
@@ -255,10 +293,10 @@ fi
 case "$state" in
   STARTED) rm -f "$claim_u" 2>/dev/null ;;
   FOLDER-FAILED*) rm -f "$claim_u" 2>/dev/null
-    say "THE PLAN HANDOFF DID NOT START: the new window opened but could not enter $wcwd (${state#FOLDER-FAILED: }), so no fresh session is building this plan. Tell the user in one line. The launcher is kept at $launcher; once the folder is back it opens with: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so." ;;
+    say "THE PLAN HANDOFF DID NOT START: the new $kind window opened but could not enter $wcwd (${state#FOLDER-FAILED: }), so no fresh session is building this plan. Tell the user in one line. The launcher is kept at $launcher; once the folder is back it opens with: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so." ;;
   CALLED-OFF)
-    say "THE PLAN HANDOFF DID NOT START: a new window was asked for, but within $limit seconds nothing ran its launcher, so the handoff was called off and a window that starts later builds nothing. Tell the user in one line; to open it by hand, delete $claim and run: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so." ;;
+    say "THE PLAN HANDOFF DID NOT START: a new $kind window was asked for, but within $limit seconds nothing ran its launcher, so the handoff was called off and a window that starts later builds nothing. Tell the user in one line; to open it by hand, delete $claim and run: wt.exe $shell -NoExit -ExecutionPolicy Bypass -File \"$launcher\" . Do not start work on this plan here unless they say so." ;;
   *)
-    say "THE PLAN HANDOFF MAY NOT HAVE STARTED: its claim at $claim could not be read, so whether a fresh session is building this plan is unknown. Tell the user in one line, and ask them to look for the new window before anything is built here." ;;
+    say "THE PLAN HANDOFF MAY NOT HAVE STARTED: its claim at $claim could not be read, so whether a fresh $kind session is building this plan is unknown. Tell the user in one line, and ask them to look for the new window before anything is built here." ;;
 esac
-say "THE PLAN HANDOFF HAS FIRED: a fresh auto-mode session has started in a new window to build this plan ($goal_note). Do not start work on this plan here, because two sessions building one plan collide. Tell the user the new window has it and this one can be closed, then stop."
+say "THE PLAN HANDOFF HAS FIRED: a fresh $kind auto-mode session has started in a new window to build this plan ($goal_note). Do not start work on this plan here, because two sessions building one plan collide. Tell the user the new window has it and this one can be closed, then stop."

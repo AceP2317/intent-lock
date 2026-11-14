@@ -7,8 +7,12 @@
 # mode twice with --setting-sources project, so none of your own user settings or hooks load
 # (CLAUDE.md memory files are not settings and still load). Needs node for the stand-in approver.
 #   1. Claude writes an UNSEALED plan and tries to leave plan mode  -> the gate must print DENY
-#   2. Claude writes a SEALED plan and tries to leave plan mode    -> the gate must print ALLOW
-# The verdicts are read from the gate's own log, written by the hook inside that run.
+#   2. Claude writes a SEALED plan and tries to leave plan mode    -> the gate must print ALLOW, arm
+#      the handoff, and the approval must open no window, because nobody is present in a headless run
+# The verdicts are read from the gate's own log, written by the hooks inside that run. A probe hook
+# records the CLAUDE_CODE_ENTRYPOINT value the hooks saw, so a failure reads as a measurement. Should
+# the handoff miss that value, the test flags it sets make it write its launcher into the run folder,
+# where this script sees it, instead of opening a window.
 #
 # Costs two short model turns on whatever account `claude` is logged into. Plan files land in your
 # usual plans folder and are deleted afterwards.
@@ -19,14 +23,18 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL live: jq is not installed"; exit 2
 
 P=$(mktemp -d)
 if [ -n "${LIVE_KEEP:-}" ]; then echo "keeping the run folder: $P"; else trap 'rm -rf "$P"' EXIT; fi
-STATE="$P/state"; mkdir -p "$P/proj/.claude" "$STATE"
+STATE="$P/state"; mkdir -p "$P/proj/.claude" "$STATE" "$P/tmp"
 H="$KIT/hooks"; command -v cygpath >/dev/null 2>&1 && H=$(cygpath -m "$H")
-jq -n --arg h "$H" '{hooks:{
+printf '%s\n' 'cat >/dev/null' 'printf "%s\n" "${CLAUDE_CODE_ENTRYPOINT-unset}" >> "$(dirname "$0")/entry.txt"' > "$P/seen-entry.sh"
+PROBE="$P/seen-entry.sh"; command -v cygpath >/dev/null 2>&1 && PROBE=$(cygpath -m "$PROBE")
+jq -n --arg h "$H" --arg probe "$PROBE" '{hooks:{
   UserPromptSubmit:[{hooks:[{type:"command",command:("bash \"" + $h + "/intent-inject.sh\"")}]}],
   PreToolUse:[{matcher:"ExitPlanMode",hooks:[{type:"command",command:("bash \"" + $h + "/intent-guard.sh\"")}]},
               {matcher:"AskUserQuestion",hooks:[{type:"command",command:("bash \"" + $h + "/question-guard.sh\"")}]}],
-  PostToolUse:[{matcher:"ExitPlanMode",hooks:[{type:"command",command:("bash \"" + $h + "/plan-handoff.sh\"")}]}]}}' \
+  PostToolUse:[{matcher:"ExitPlanMode",hooks:[{type:"command",command:("bash \"" + $h + "/plan-handoff.sh\"")},
+                                              {type:"command",command:("bash \"" + $probe + "\"")}]}]}}' \
   > "$P/proj/.claude/settings.json"
+TMPW="$P/tmp"; command -v cygpath >/dev/null 2>&1 && TMPW=$(cygpath -w "$TMPW")
 
 SEALED='## Intent
 
@@ -53,7 +61,8 @@ jq -n --arg host "$HOST" --arg log "$LOG" \
 
 ask() {  # ask <label> <instruction>
   ( cd "$P/proj" && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_PLUGIN_DIRS -u ANTHROPIC_API_KEY \
-      INTENT_LOCK_STATE="$STATE" \
+      -u INTENT_LOCK_WATCH_HERE -u INTENT_LOCK_GUIDE_MODEL \
+      INTENT_LOCK_STATE="$STATE" TEMP="$TMPW" TMP="$TMPW" INTENT_LOCK_HANDOFF_NOWINDOW=1 INTENT_LOCK_HANDOFF_WAIT=1 \
       claude -p "$2" --setting-sources project --permission-mode plan --output-format stream-json --verbose \
       --mcp-config "$P/mcp.json" --strict-mcp-config --permission-prompt-tool mcp__host__approve \
       --max-turns 6 ) > "$P/$1.jsonl" 2>"$P/$1.err"
@@ -78,4 +87,17 @@ echo "--- verdicts ---"
 d=$(grep -c ' DENY unsealed ' "$STATE/guard.log" 2>/dev/null); a=$(grep -c ' ALLOW confirmed watch ' "$STATE/guard.log" 2>/dev/null)
 [ "${d:-0}" -ge 1 ] && echo "PASS live: the gate printed DENY on the unsealed plan" || echo "FAIL live: no DENY for the unsealed plan"
 [ "${a:-0}" -ge 1 ] && echo "PASS live: the gate printed ALLOW on the sealed plan" || echo "FAIL live: no ALLOW for the sealed plan"
-[ "${d:-0}" -ge 1 ] && [ "${a:-0}" -ge 1 ]
+# Opens no window: the gate armed the handoff, the handoff ran and used the arm up, it logged that the
+# run was headless, and no launcher was written. Each part alone could pass with the handoff skipped.
+seen=$(tr -d '\r' < "$P/entry.txt" 2>/dev/null | sort -u | paste -sd, -); seen=${seen:-no PostToolUse hook ran}
+armed=$(grep -c ' ALLOW confirmed watch armed ' "$STATE/guard.log" 2>/dev/null)
+left=$(ls -A "$STATE/handoff" 2>/dev/null | wc -l)
+quiet=$(grep -c 'HANDOFF none: headless run' "$STATE/guard.log" 2>/dev/null)
+launched=$(ls "$P/tmp" 2>/dev/null | grep -c '^intent-lock-handoff-')
+w=0
+if [ "${armed:-0}" -ge 1 ] && [ "$left" -eq 0 ] && [ "${quiet:-0}" -ge 1 ] && [ "$launched" -eq 0 ]; then
+  echo "PASS live: approving the sealed WATCH plan in a headless run opens no window (the hooks saw CLAUDE_CODE_ENTRYPOINT=$seen)"; w=1
+else
+  echo "FAIL live: approving the sealed WATCH plan in a headless run did not show that it opens no window (armed ${armed:-0}, arms left $left, headless lines ${quiet:-0}, launchers $launched; the hooks saw CLAUDE_CODE_ENTRYPOINT=$seen)"
+fi
+[ "${d:-0}" -ge 1 ] && [ "${a:-0}" -ge 1 ] && [ "$w" = 1 ]

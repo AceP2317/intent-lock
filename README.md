@@ -28,14 +28,22 @@ So this kit ships the interview as a skill, and the enforcement as four hooks.
    assumptions and tensions, and a restatement put inside the question box for you to break. This
    one is instructed rather than counted: the gate checks the sealed record, not the number of
    rounds.
-4. **A fresh session to build.** Answer "walk away" and `plan-handoff.sh` opens a new auto-mode
-   session on approval whose first prompt is `/goal`, built from the plan's DONE slot, so a separate
-   grader checks the build from its first turn. The DONE line may be bold (`**DONE**`, `**DONE:**`,
-   `**DONE.**`), plain (`- DONE: ...`) or bare (`DONE its suite passes`). The new session starts
-   at the effort level the planning window had when you approved, not the saved default. On Windows
-   it opens the window; on Mac and Linux it prints the exact command to run. It opens only for the
-   plan exit you answered, and only while the plan you approve still says walk away: change its line
-   to `<!-- INTENT-LOCK:WATCH -->` in the approval dialog and the build stays in this window.
+4. **A fresh session to build.** Whichever way you answer, `plan-handoff.sh` opens a new auto-mode
+   session on approval, in the folder you planned in, so the build never carries the planning conversation
+   on every request.
+   - **Walk away**, and its first prompt is `/goal`, built from the plan's DONE slot, so a separate
+     grader checks the build from its first turn. The DONE line may be bold (`**DONE**`, `**DONE:**`,
+     `**DONE.**`), plain (`- DONE: ...`) or bare (`DONE its suite passes`).
+   - **Watch**, and it opens with no grader. It stops at each watch stop the plan names, and before
+     anything the plan does not cover, to ask you there. A watched build runs in auto mode too, not
+     in the permission mode picked in the approval dialog; the switch under "Switching parts off"
+     keeps Claude Code's normal behavior instead.
+
+   The new session starts at the effort level the planning window had when you approved, not the
+   saved default. On Windows it opens the window; on Mac and Linux it prints the exact command to
+   run. It opens only for the plan exit you answered, and the plan as you approve it picks the kind:
+   change its line in the approval dialog and the other kind opens. A run with nobody present, such
+   as `claude -p` or the Agent SDK, opens nothing.
 
 ## Install in three steps
 
@@ -64,6 +72,11 @@ rules apply outside plan mode too.
 - `touch ~/.claude/.intent-off` turns off the method and the exit gate.
 - `touch ~/.claude/.question-off` turns off the question guard.
 - A single plan can skip the gate with `<!-- INTENT-LOCK:WAIVED -->` in place of the seal.
+- `INTENT_LOCK_WATCH_HERE=1` keeps a watched build in the planning window, as Claude Code normally
+  does, in the permission mode you pick when you approve. A walk-away still opens a fresh session.
+  Set it in the `env` block of `~/.claude/settings.json`, which Claude Code passes to its hooks:
+
+      "env": { "INTENT_LOCK_WATCH_HERE": "1" }
 
 Every hook fails open: when it cannot read its input it lets the action through and prints a
 warning, so a check that could not run never looks like one that passed. The exit gate puts that
@@ -74,13 +87,39 @@ warning on your screen and in front of Claude, since a hook's stderr alone reach
 - `bash test/run.sh` runs every hook against fixtures in both directions. Each refusal has a twin
   that must pass, and each hook starts with an input it must leave alone.
 - `bash test/live.sh` proves the exit gate inside two real `claude -p` runs, in a throwaway project
-  whose only settings are this kit's hooks: it must refuse an unsealed plan and allow a sealed one.
-  It costs two short model turns and needs node for a stand-in approver.
+  whose only settings are this kit's hooks: it must refuse an unsealed plan, allow a sealed one, and
+  show that approving it in a run with nobody present opens no window. It costs two short model
+  turns and needs node for a stand-in approver.
+
+## Plan on one model, build on another
+
+A plan is short, and every line of it steers the build, so it is worth the stronger model. A build is
+long, and most of its requests are routine. Because the kit builds in a session of its own, the two
+can run on different models:
+
+1. Start planning sessions on the stronger model, with `claude --model <name>`, and keep your everyday
+   model saved as the default. The fresh build window starts on the saved default.
+2. Give the build a guide. Claude Code's [advisor](https://code.claude.com/docs/en/advisor) lets a
+   session consult a stronger model when it asks. Set one for every session with Claude Code's
+   `/advisor` command, which saves it to `advisorModel` in your user settings. Or set
+   `INTENT_LOCK_GUIDE_MODEL` to a model alias or id in the same `env` block as above: the kit then
+   passes it with `--advisor` to the build windows it opens, and to no other session. A value holding
+   anything but letters, digits, dots, dashes and square brackets is dropped, and the handoff says so.
+3. The build window's first prompt tells it when to consult a guide, if it has one: before leaving
+   the plan's path, when the same check fails twice, and before reporting the plan done.
+
+Claude Code's page sets the rules for a guide. It "must rank at or above your session's main model".
+With `--advisor`, Claude Code exits with an error at launch when the build model cannot take an
+advisor, or the guide named cannot act as one. On Windows the kit's launcher then prints one line
+naming `INTENT_LOCK_GUIDE_MODEL` as the setting to unset.
 
 ## Limits
 
-- Only Windows has been tested end to end. The handoff on Mac and Linux prints a command rather
-  than opening a window.
+- Only Windows has been tested end to end. On a Mac or Linux computer either answer prints a command
+  to run in a new terminal rather than opening a window.
+- The guide is Claude Code's advisor tool, which Anthropic's page calls experimental: it "requires
+  the Anthropic API or Claude Platform on AWS", and isn't available on Amazon Bedrock, Google Cloud's
+  Agent Platform or Microsoft Foundry.
 - The question guard counts sentences and matches words. It cannot tell whether an option actually
   teaches the choice; that half is the method's job, not the hook's.
 - A `/goal` keeps re-checking until its grader rules the condition met or impossible. If something
@@ -96,9 +135,11 @@ correction, and the original instruction becomes a smaller share of a bigger con
 The interview moves the corrections to planning size, before anything is built, and the handoff
 starts the build without the planning conversation riding along on every request.
 
-Measured on the session that planned the write-up below, with both windows counted: 113.0 million
-tokens read with the handoff, against 165.5 million for the same build kept in the planning window.
-The build met all six of its checks in one 39-minute unattended pass.
+On 12 October 2026, measured on the session that planned the write-up below, with both windows
+counted: 113.0 million tokens were read with the handoff, against 165.5 million for the same build
+kept in the planning window. That build met all six of its checks in one 39-minute unattended pass.
+The kit then opened a fresh window for a walk-away only; the figures have not been measured again
+since watched builds gained one.
 
 ## Read more
 
